@@ -11,9 +11,13 @@
 
 
 # Scope
-Purpose: Ingests NWB and spits out dataframes with the relevant information. Focused on dynamic foraging. Other tasks can branch and build task-specific utils.
+Purpose: Ingests NWB and spits out dataframes with the relevant information. Focused on Pavlovian task.
 Inputs are nwbs, outputs are dataframes (tidy and not)
 Dependencies: xarray (includes numpy and pandas), scikit-learn (includes scipy), matplotlib
+
+Pavlovian NWB specification: https://alleninstitute-my.sharepoint.com/:w:/g/personal/rachel_lee_alleninstitute_org/Eflk1jwAQW1Ej7oMwVSDgHQBgOXqTCDOo4ZFzcY7BSiyTw?e=p9rTRP
+ 
+
 
 
 
