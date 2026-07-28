@@ -378,53 +378,19 @@ def create_df_events(nwb_filename, adjust_time=True, verbose=True):
             .to_dataframe()
             .reset_index()
         )
-
-        df["timestamps_raw"] = df["timestamp"]
-        df["timestamps"] = df["timestamp"] / MS_TO_S
-        df["canonical"] = df["events"].map(canonical_event_name)
+        df = df.rename(columns={'timestamp':'timestamps', 'events':'event'})
+        df["timestamps_raw"] = df["timestamps"]
+        df["timestamps"] = df["timestamps"] / MS_TO_S
+        df["canonical"] = df["event"].map(canonical_event_name)
 
     # Determine time 0 as first go Cue
     if adjust_time:
         t0 = nwb.trials[SESSION_ALIGNMENT][0] / MS_TO_S
-        df["timestamp"] = df["timestamp"] - t0
+        df["timestamps"] = df["timestamps"] - t0
     else:
         t0 = 0
 
-    # # Iterate over event types and build a dataframe of each
-    # events = []
-    # for e in event_types:
-    #     # For each event, get timestamps, data, and label
-    #     raw_stamps = nwb.acquisition[e].timestamps[:]
-    #     data = nwb.acquisition[e].data[:]
-    #     labels = [e] * len(data)
-    #     stamps = raw_stamps - t0
-    #     df = pd.DataFrame(
-    #         {"timestamps": stamps, "data": data, "event": labels, "raw_timestamps": raw_stamps}
-    #     )
-    #     events.append(df)
 
-    # # Add keys from trials table
-    # trial_events = ["goCue_start_time"]
-    # for e in trial_events:
-    #     raw_stamps = nwb.trials[:][e].values
-    #     labels = [e] * len(raw_stamps)
-    #     data = [1] * len(raw_stamps)
-    #     stamps = raw_stamps - t0
-    #     df = pd.DataFrame(
-    #         {"timestamps": stamps, "data": data, "event": labels, "raw_timestamps": raw_stamps}
-    #     )
-    #     events.append(df)
-
-    # # Build dataframe by concatenating each event
-    # df = pd.concat(events)
-    # df = df.sort_values(by="timestamps")
-    # df = df.dropna(subset="timestamps").reset_index(drop=True)
-
-    # Sanity check that the first go cue is time 0
-    # gocues = df.query("event == @SESSION_ALIGNMENT")
-    # if (len(gocues) > 0) and (adjust_time):
-    #     assert np.isclose(gocues.iloc[0]["timestamps"], 0, rtol=0.01)
-    # # TODO, need more checks here for time alignment on trial index.
 
     if adjust_time and verbose:
         print(
