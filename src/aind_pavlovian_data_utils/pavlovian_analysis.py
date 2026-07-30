@@ -31,10 +31,12 @@ import re
 import warnings
 
 import matplotlib
+import pandas as pd
 
 matplotlib.use("Agg")  # capsule/headless safe; callers may override before import
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+import plotly.graph_objects as go  # noqa: E402
 
 from . import nwb_utils  # noqa: E402
 from aind_dynamic_foraging_data_utils.alignment import event_triggered_response # noqa: E402
@@ -90,7 +92,7 @@ def load_pavlovian_dfs(nwb_or_path, preprocessing=DEFAULT_PREPROCESSING, adjust_
     Returns
     ----------
     df_events : pandas.DataFrame
-        Tidy events with ``timestamp`` (s), ``events``, ``trial``, ``canonical``.
+        Tidy events with ``timestamps`` (s), ``event`, ``trial``, ``canonical``.
     df_fip : pandas.DataFrame
         Tidy FIP for the selected variant with ``channel`` / ``roi``.
     meta : dict
@@ -147,8 +149,8 @@ def classify_trials(df_events, cs_list):
 
     out = {}
     for cs in cs_list:
-        rows = df_events[df_events["canonical"] == cs].sort_values("timestamp")
-        onsets = rows["timestamp"].to_numpy(float)
+        rows = df_events[df_events["canonical"] == cs].sort_values("timestamps")
+        onsets = rows["timestamps"].to_numpy(float)
         trials = rows["trial"].astype(int).to_numpy()
         delivered = us_by_kind[CS_INFO[cs][0]]
         pos_mask = np.array([t in delivered for t in trials], dtype=bool)
@@ -259,7 +261,7 @@ def plot_session_overview(df_events, df_fip, paradigm, meta, channels=None, fig=
 
     def _mark(key, color, width, label):
         """Shade spans for a canonical event key and add one legend proxy."""
-        times = df_events.loc[df_events["canonical"] == key, "timestamp"].to_numpy(float)
+        times = df_events.loc[df_events["canonical"] == key, "timestamps"].to_numpy(float)
         for tt in times:
             ax.axvspan(tt, tt + width, color=color)
         if len(times):
@@ -270,7 +272,7 @@ def plot_session_overview(df_events, df_fip, paradigm, meta, channels=None, fig=
     for cs in paradigm["cs_list"]:
         _mark(cs, CS_INFO[cs][1] + (0.30,), 1.0, cs)
 
-    licks = df_events.loc[df_events["canonical"] == "Lick", "timestamp"].to_numpy(float)
+    licks = df_events.loc[df_events["canonical"] == "Lick", "timestamps"].to_numpy(float)
     if len(licks):
         ax.plot(
             licks,
@@ -368,7 +370,7 @@ def plot_lick_quant(df_events, paradigm, cls, fig=None):
 
     Draws into ``fig`` (a Figure or SubFigure) when given, else creates one.
     """
-    licks = df_events.loc[df_events["canonical"] == "Lick", "timestamp"].to_numpy(float)
+    licks = df_events.loc[df_events["canonical"] == "Lick", "timestamps"].to_numpy(float)
     if len(licks) == 0 or len(paradigm["cs_list"]) == 0:
         return None
     cs_list = paradigm["cs_list"]
@@ -442,7 +444,7 @@ def plot_anticipatory_lick_summary(
     A ``mean +/- SD`` marker sits beside each cloud (``summary='median'`` ->
     ``median +/- IQR``). Draws into ``fig`` (a Figure or SubFigure) when given.
     """
-    licks = df_events.loc[df_events["canonical"] == "Lick", "timestamp"].to_numpy(float)
+    licks = df_events.loc[df_events["canonical"] == "Lick", "timestamps"].to_numpy(float)
     names = paradigm["cs_list"]
     if len(licks) == 0 or not names:
         return None
@@ -508,7 +510,7 @@ def plot_anticipatory_lick_summary(
 
 def _anticipatory_summary(df_events, paradigm, cls, window_s):
     """Per-CS anticipatory-lick numbers for the JSON/return summary."""
-    licks = df_events.loc[df_events["canonical"] == "Lick", "timestamp"].to_numpy(float)
+    licks = df_events.loc[df_events["canonical"] == "Lick", "timestamps"].to_numpy(float)
     out = {}
     for cs in paradigm["cs_list"]:
         counts = _anticipatory_lick_counts(licks, cls[cs]["onsets"], window_s).astype(float)
@@ -533,8 +535,8 @@ def plot_reaction_time(df_events, fig=None):
 
     Draws into ``fig`` (a Figure or SubFigure) when given, else creates one.
     """
-    rew = df_events.loc[df_events["canonical"] == "Reward", "timestamp"].to_numpy(float)
-    lick = np.sort(df_events.loc[df_events["canonical"] == "Lick", "timestamp"].to_numpy(float))
+    rew = df_events.loc[df_events["canonical"] == "Reward", "timestamps"].to_numpy(float)
+    lick = np.sort(df_events.loc[df_events["canonical"] == "Lick", "timestamps"].to_numpy(float))
     if len(rew) == 0 or len(lick) == 0:
         return None
     rt = np.full(len(rew), np.nan)
@@ -572,8 +574,8 @@ def _summary_sections(
 
     ``draw_fn`` takes a target SubFigure and renders one section into it.
     """
-    licks = df_events.loc[df_events["canonical"] == "Lick", "timestamp"].to_numpy(float)
-    rews = df_events.loc[df_events["canonical"] == "Reward", "timestamp"].to_numpy(float)
+    licks = df_events.loc[df_events["canonical"] == "Lick", "timestamps"].to_numpy(float)
+    rews = df_events.loc[df_events["canonical"] == "Reward", "timestamps"].to_numpy(float)
     row_h = 3.0 * max(n_roi, 1)
     sections = []
 
