@@ -409,7 +409,7 @@ def plot_pavlovian_session_plotly(df_events, df_fip, paradigm, meta, channels=No
             go.Scattergl(
                 x=ts, y=d, customdata=custom,
                 mode="lines", hovertemplate=hover,
-                line=dict(color=color, width=0.6),
+                line=dict(color=color, width=1),
                 name=label,
             )
         )
@@ -419,7 +419,7 @@ def plot_pavlovian_session_plotly(df_events, df_fip, paradigm, meta, channels=No
             go.Scattergl(
                 x=ts, y=d_clipped, customdata=custom,
                 mode="lines", hovertemplate=hover,
-                line=dict(color=color, width=0.6),
+                line=dict(color=color, width=1),
                 name=label, visible=False, showlegend=False,
             )
         )
