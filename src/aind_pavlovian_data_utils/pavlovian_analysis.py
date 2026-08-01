@@ -293,6 +293,245 @@ def plot_session_overview(df_events, df_fip, paradigm, meta, channels=None, fig=
     ax.grid(True)
     ax.legend(loc="upper right", ncol=6, fontsize=8)
     return fig
+def _add_spans(df_events, shapes, fig, key, rgb, alpha, span_width):
+    times = df_events.loc[df_events["canonical"] == key, "timestamps"].to_numpy(float)
+    color = _rgba(rgb, alpha)
+    for tt in times:
+        shapes.append(
+            dict(
+                type="rect", xref="x", yref="paper",
+                x0=tt, x1=tt + span_width, y0=0, y1=1,
+                fillcolor=color, line_width=0, layer="below",
+            )
+        )
+    if len(times):
+        fig.add_trace(
+            go.Scatter(
+                x=[None], y=[None], mode="markers",
+                marker=dict(size=12, color=color, symbol="square"),
+                name=key, showlegend=True,
+            )
+        )
+
+def _rgba(rgb_tuple, alpha):
+    r, g, b = rgb_tuple[:3]
+    return "rgba(%d,%d,%d,%.2f)" % (int(r * 255), int(g * 255), int(b * 255), alpha)
+
+def plot_pavlovian_session_plotly(df_events, df_fip, paradigm, meta, channels=None):
+    """Plotly session overview: FIP channels stacked above a behavior panel.
+
+    Parameters
+    ----------
+    df_events : pandas.DataFrame
+        Tidy events with ``timestamps`` (s) and ``canonical`` columns.
+    df_fip : pandas.DataFrame
+        Tidy FIP measurements with ``channel``, ``roi``, ``timestamps``, ``data`` columns.
+    paradigm : dict
+        Output of :func:`detect_paradigm` (``stage``, ``cs_list``, ``has_airpuff``).
+    meta : dict
+        Session metadata with ``subject_id`` and ``date`` keys.
+    channels : dict or None
+        Optional ``{'<Chan>_<ROI>': 'location'}`` filter; ``None`` shows all present.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    BEHAVIOR_BOTTOM = 0.0
+    BEHAVIOR_TOP = 1.0
+    LICK_CENTER = 0.5
+    TICK_HALF = 0.08
+    FIP_START = BEHAVIOR_TOP + 0.1
+    FIP_GAP = 0.3
+    CHANNEL_HEIGHT = 2.0  # fixed display units per channel
+
+    fig = go.Figure()
+
+    # --- Behavior: CS/US event spans ---
+    shapes = []
+    _add_spans(df_events, shapes, fig, "Reward", (0, 0, 1), 0.85, 0.5)
+    _add_spans(df_events, shapes, fig, "Airpuff", (0, 0, 0), 0.70, 0.5)
+    for cs in paradigm["cs_list"]:
+        _add_spans(df_events, shapes, fig, cs, CS_INFO[cs][1], 0.80, 1.0)
+    fig.update_layout(shapes=shapes)
+
+    # Lick ticks
+    lick_times = df_events.loc[df_events["canonical"] == "Lick", "timestamps"].to_numpy(float)
+    if len(lick_times):
+        xs, ys = [], []
+        for t in lick_times:
+            xs += [t, t, None]
+            ys += [LICK_CENTER - TICK_HALF, LICK_CENTER + TICK_HALF, None]
+        fig.add_trace(
+            go.Scattergl(
+                x=xs, y=ys, mode="lines",
+                line=dict(color="black", width=1.5),
+                name="Lick",
+            )
+        )
+
+    yticks = [LICK_CENTER]
+    ylabels = ["Lick"]
+
+    # --- FIP channels stacked above behavior ---
+    # Each channel is mapped to a fixed CHANNEL_HEIGHT band.  Y-tick labels show
+    # the actual p01 / p99 data values so the dF/F scale is readable.
+    pairs = _channels_present(df_fip, channels)
+    band = 0.0
+    y_main_top = BEHAVIOR_TOP
+    fip_unclipped_ids = []
+    fip_clipped_ids = []
+
+    for channel, roi in pairs:
+        sub = df_fip[(df_fip["channel"] == channel) & (df_fip["roi"] == roi)].sort_values("timestamps")
+        vals = sub["data"].astype(float).to_numpy()
+        if vals.size == 0 or np.all(np.isnan(vals)):
+            continue
+
+        p01, p99 = np.nanpercentile(vals, 1), np.nanpercentile(vals, 99)
+        span = p99 - p01
+        if np.isnan(span) or span == 0:
+            span = 1.0
+
+        base = FIP_START + band
+        scale = CHANNEL_HEIGHT / span
+        d = (vals - p01) * scale + base
+        d_clipped = (np.clip(vals, p01, p99) - p01) * scale + base
+
+        color = CHANNEL_COLOR[channel]
+        label = f"{channel} ROI{roi}"
+        ts = sub["timestamps"].to_numpy()
+        custom = np.stack([ts, vals], axis=-1)
+        hover = f"%{{customdata[0]:.2f}}s  %{{customdata[1]:.4f}}<extra>{label}</extra>"
+
+        fip_unclipped_ids.append(len(fig.data))
+        fig.add_trace(
+            go.Scattergl(
+                x=ts, y=d, customdata=custom,
+                mode="lines", hovertemplate=hover,
+                line=dict(color=color, width=0.6),
+                name=label,
+            )
+        )
+
+        fip_clipped_ids.append(len(fig.data))
+        fig.add_trace(
+            go.Scattergl(
+                x=ts, y=d_clipped, customdata=custom,
+                mode="lines", hovertemplate=hover,
+                line=dict(color=color, width=0.6),
+                name=label, visible=False, showlegend=False,
+            )
+        )
+
+        yticks.extend([base, base + CHANNEL_HEIGHT / 2.0, base + CHANNEL_HEIGHT])
+        ylabels.extend([f"{p01:.3f}", f"{label}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;", f"{p99:.3f}"])
+
+        band += CHANNEL_HEIGHT + FIP_GAP
+        y_main_top = base + CHANNEL_HEIGHT + 0.25
+
+    # Toggle: full range ↔ 1–99% clipped
+    if fip_unclipped_ids:
+        n_all = len(fig.data)
+        vis_full = [True] * n_all
+        vis_clip = [True] * n_all
+        for idx in fip_clipped_ids:
+            vis_full[idx] = False
+        for idx in fip_unclipped_ids:
+            vis_clip[idx] = False
+        for idx in fip_clipped_ids:
+            vis_clip[idx] = True
+        fig.update_layout(
+            updatemenus=[dict(
+                type="buttons", direction="right",
+                x=1.0, y=1.0, xanchor="right", yanchor="top",
+                showactive=True,
+                buttons=[
+                    dict(label="FIP: full range", method="restyle", args=[{"visible": vis_full}]),
+                    dict(label="FIP: clip 1–99%", method="restyle", args=[{"visible": vis_clip}]),
+                ],
+            )]
+        )
+
+    fig.update_yaxes(
+        tickvals=yticks, ticktext=ylabels,
+        fixedrange=True,
+        range=[BEHAVIOR_BOTTOM - 0.05, y_main_top],
+    )
+    fig.update_xaxes(
+        title_text="Time (s)",
+        rangeslider=dict(visible=True, thickness=0.06),
+    )
+    fig.update_layout(
+        title=dict(
+            text="Session overview — %s %s [%s]"
+            % (meta.get("subject_id", ""), meta.get("date", ""), paradigm["stage"]),
+            font=dict(size=12),
+            x=0.0, xanchor="left", y=0.98, yanchor="top",
+        ),
+        height=max(400, 300 + 120 * max(len(pairs), 1)),
+        width=1000,
+        template="simple_white",
+        showlegend=True,
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+            font=dict(size=9), entrywidthmode="pixels", entrywidth=125,
+        ),
+        margin=dict(l=70, r=20, t=120, b=40),
+    )
+    return fig
+
+
+def plot_pavlovian_session_nwb_plotly(nwb_list, channels=None):
+    """NWB-level entry point for :func:`plot_session_overview_plotly`.
+
+    Complements ``plot_session_in_time_nwb_plotly`` (foraging sessions) for
+    Pavlovian fiber-photometry data.  Each item in ``nwb_list`` must expose
+    ``df_events`` and ``df_fip`` as attributes; the first item with a ``meta``
+    attribute is used as the session metadata in the figure title.
+
+    When more than one NWB is supplied the dataframes are concatenated so the
+    full set of events and FIP traces is shown in a single figure.
+
+    Parameters
+    ----------
+    nwb_list : object or list of objects
+        NWB-like objects with ``df_events`` (``timestamps`` + ``canonical``),
+        ``df_fip`` (``channel`` / ``roi`` / ``timestamps`` / ``data``), and
+        optionally ``meta`` (``subject_id``, ``date``) attributes.
+    channels : dict or None
+        Optional ``{'<Chan>_<ROI>': 'location'}`` filter; ``None`` -> all present.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    
+
+    if not isinstance(nwb_list, (list, tuple)):
+        nwb_list = [nwb_list]
+
+    events_acc, fip_acc = [], []
+    primary_meta = None
+
+    for nwb in nwb_list:
+        if hasattr(nwb, "df_events") and nwb.df_events is not None:
+            events_acc.append(nwb.df_events.copy())
+        if hasattr(nwb, "df_fip") and nwb.df_fip is not None:
+            fip_acc.append(nwb.df_fip.copy())
+        if primary_meta is None and hasattr(nwb, "meta") and nwb.meta is not None:
+            primary_meta = nwb.meta
+
+    if not events_acc:
+        raise ValueError("No df_events found on any nwb in nwb_list")
+    if not fip_acc:
+        raise ValueError("No df_fip found on any nwb in nwb_list")
+    
+
+    df_events = pd.concat(events_acc, ignore_index=True)
+    df_fip = pd.concat(fip_acc, ignore_index=True)
+    paradigm = detect_paradigm(df_events)
+    return plot_pavlovian_session_plotly(df_events, df_fip, paradigm, primary_meta or {}, channels)
 
 
 def plot_cs_psth_grid(
