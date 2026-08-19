@@ -25,7 +25,7 @@ dependencies = [
     'aind-nwb-utils',
     'aind-data-access-api',
     'codeocean',
-    'aind-dynamic-foraging-data-utils'
+    'aind-dynamic-foraging-data-utils>=0.1.52'
 ]
 
 [project.optional-dependencies]

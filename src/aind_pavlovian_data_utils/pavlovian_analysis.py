@@ -103,7 +103,7 @@ def load_pavlovian_dfs(nwb_or_path, preprocessing=DEFAULT_PREPROCESSING, adjust_
         adjust_time = nwb_utils.can_align_to_cs(nwb)
 
     df_events = nwb_utils.create_df_events(nwb, adjust_time=adjust_time, verbose=False)
-    df_fip = nwb_utils.create_df_fip_pavlovian(
+    df_fip = nwb_utils.create_df_fip(
         nwb, preprocessing=preprocessing, adjust_time=adjust_time, verbose=False
     )
     subject_id, session_date = nwb_utils.parse_session_name(nwb)

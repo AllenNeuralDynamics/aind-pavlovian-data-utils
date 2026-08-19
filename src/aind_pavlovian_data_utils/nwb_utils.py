@@ -10,7 +10,6 @@ Utility functions for processing dynamic foraging data.
     create_df_trials
     create_df_events
     create_df_fip
-    create_df_fip_pavlovian
 """
 
 import os
@@ -22,6 +21,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from aind_nwb_utils.nwb_io import determine_io
+from aind_dynamic_foraging_data_utils import nwb_utils as nwb_utils_dft
 
 # If we adjust time_in_session, adjust it to this
 SESSION_ALIGNMENT = "CS_start_time"
@@ -415,90 +415,15 @@ def create_df_events(nwb_filename, adjust_time=True, verbose=True):
     return df
 
 
-def create_df_fip(nwb_filename, tidy=True, adjust_time=True, verbose=True):
-    """
-    returns a dataframe of the FIB data in the nwb file
-    if tidy, return a tidy dataframe
-    if not tidy, return pivoted by timestamp
-
-    adjust_time (bool), set time of first goCue to t=0
-    """
-
-    nwb = load_nwb_from_filename(nwb_filename)
-
-    # Build list of all FIB events in NWB file
-    nwb_data = nwb.acquisition
-    if len(nwb.processing):
-        nwb_data = nwb.acquisition | nwb.processing["fiber_photometry"].data_interfaces
-
-    event_types = set(nwb_data.keys())
-
-    channels = ["G", "R", "Iso"]
-    fibers = ["0", "1", "2", "3", "4"]
-    FIP_prefixes = [f"{c}_{f}" for c in channels for f in fibers]
-
-    # Filter out all fibers
-    event_types = {k for k in event_types if any(k.startswith(prefix) for prefix in FIP_prefixes)}
-
-    # If no FIB data available
-    if len(event_types) == 0:
-        return None
-
-    # Determine time 0 as first go Cue
-    if adjust_time:
-        t0 = nwb.trials[SESSION_ALIGNMENT][0]
-    else:
-        t0 = 0
-
-    # Iterate over event types and build a dataframe of each
-    events = []
-    for e in event_types:
-        # For each event, get timestamps, data, and label
-        raw_stamps = nwb_data[e].timestamps[:]
-        data = nwb_data[e].data[:]
-        labels = [e] * len(data)
-        stamps = raw_stamps - t0
-        df = pd.DataFrame(
-            {"timestamps": stamps, "data": data, "event": labels, "raw_timestamps": raw_stamps}
-        )
-        events.append(df)
-
-    # Build dataframe by concatenating each event
-    df = pd.concat(events)
-    df = df.sort_values(by="timestamps")
-    df = df.dropna(subset="timestamps").reset_index(drop=True)
-
-    # Add session_idx with subject ID and session date info - JL
-    if nwb.session_id.startswith("behavior") or nwb.session_id.startswith("FIP"):
-        splits = nwb.session_id.split("_")
-        subject_id = splits[1]
-        session_date = splits[2]
-    else:
-        splits = nwb.session_id.split("_")
-        subject_id = splits[0]
-        session_date = splits[1]
-    ses_idx = subject_id + "_" + session_date
-    df["ses_idx"] = ses_idx
-
-    if adjust_time and verbose:
-        print(
-            "Timestamps are adjusted such that `_in_session` timestamps start at the first go cue"
-        )
-    df["timestamps"] = df["timestamps"] / MS_TO_S
-    # pivot table based on timestamps
-    if not tidy:
-        df_pivoted = pd.pivot(df, index="timestamps", columns=["event"], values="data")
-        return df_pivoted
-    else:
-        return df
 
 
-def create_df_fip_pavlovian(
+
+def create_df_fip(
     nwb_filename, preprocessing=DEFAULT_FIP_PREPROCESSING, adjust_time=True, verbose=True
 ):
     """Tidy FIP for a single preprocessing variant, annotated with channel/roi.
 
-    Wraps :func:`create_df_fip`, keeps only the ``event`` series whose names end
+    Wraps :func: from dynamic-foraging_utils `create_df_fip`, keeps only the ``event`` series whose names end
     in ``preprocessing`` (e.g. ``G_0_dff-bright_mc-iso-IRLS``), and adds a
     ``channel`` (Iso/Green/Red) and ``roi`` (int) column parsed from each name.
 
@@ -523,10 +448,13 @@ def create_df_fip_pavlovian(
     ValueError
         If no series match ``preprocessing`` (typically a typo in the name).
     """
-    df_fip = create_df_fip(nwb_filename, tidy=True, adjust_time=adjust_time, verbose=verbose)
+    nwb_utils_dft.SESSION_ALIGNMENT = SESSION_ALIGNMENT
+    df_fip = nwb_utils_dft.create_df_fip(nwb_filename, tidy=True, adjust_time=adjust_time, verbose=verbose)
+    
     if df_fip is None or len(df_fip) == 0:
         raise ValueError("No fiber-photometry data returned by create_df_fip.")
-
+    df_fip["timestamps_raw"] = df_fip["timestamps"]
+    df_fip["timestamps"] = df_fip["timestamps"] / MS_TO_S
     suffix = "_" + preprocessing
     sel = df_fip[df_fip["event"].astype(str).str.endswith(suffix)].copy()
     if len(sel) == 0:
