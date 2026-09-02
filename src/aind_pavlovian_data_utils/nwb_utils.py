@@ -309,7 +309,7 @@ def create_df_trials(nwb_filename, adjust_time=True, verbose=True):  # NOQA C901
 
     # Build dataframe
     df = nwb.trials.to_dataframe().reset_index()
-    df = df.rename(columns={"id": "trial"})
+    df = df.drop(columns = "id")
     df["ses_idx"] = nwb_utils_dft.get_nwb_ses_idx(nwb)
 
     # Adjust for gaps in trial start/stop, and use the last stop time
