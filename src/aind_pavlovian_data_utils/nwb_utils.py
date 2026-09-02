@@ -287,9 +287,7 @@ def create_single_df_session(nwb_filename):
 
     df_session.columns = df_session.columns.droplevel("type")
     df_session = df_session.reset_index()
-    df_session["ses_idx"] = (
-        df_session["subject_id"].values + "_" + df_session["session_date"].values
-    )
+    df_session["ses_idx"] = nwb_utils_dft.get_nwb_ses_idx(nwb)
     df_session = df_session.rename(columns={"variable": "session_num"})
     return df_session
 
@@ -314,21 +312,10 @@ def create_df_trials(nwb_filename, adjust_time=True, verbose=True):  # NOQA C901
     # If we are given a filename, load the NWB object itself
     nwb = load_nwb_from_filename(nwb_filename)
 
-    # Parse subject and session_date
-    if nwb.session_id.startswith("behavior") or nwb.session_id.startswith("FIP"):
-        splits = nwb.session_id.split("_")
-        subject_id = splits[1]
-        session_date = splits[2]
-    else:
-        splits = nwb.session_id.split("_")
-        subject_id = splits[0]
-        session_date = splits[1]
-    ses_idx = subject_id + "_" + session_date
-
     # Build dataframe
     df = nwb.trials.to_dataframe().reset_index()
     df = df.rename(columns={"id": "trial"})
-    df["ses_idx"] = ses_idx
+    df["ses_idx"] = nwb_utils_dft.get_nwb_ses_idx(nwb)
 
     # Adjust for gaps in trial start/stop, and use the last stop time
     last_stop = df.iloc[-1]["stop_time"]
@@ -412,6 +399,8 @@ def create_df_events(nwb_filename, adjust_time=True, verbose=True):
         print(
             "Timestamps are adjusted such that `_in_session` timestamps start at the first go cue"
         )
+        
+    df["ses_idx"] = nwb_utils_dft.get_nwb_ses_idx(nwb)
     return df
 
 
