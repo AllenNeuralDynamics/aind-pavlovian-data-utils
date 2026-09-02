@@ -14,8 +14,6 @@ Utility functions for processing dynamic foraging data.
 
 import os
 import re
-import warnings
-from datetime import date
 from typing import Optional
 
 import numpy as np
@@ -144,7 +142,6 @@ def create_single_df_session_inner(nwb):
     """
     given a nwb file, output a tidy dataframe
     """
-    df_trials = nwb.trials.to_dataframe()
 
     # -- Session-based table --
     # - Meta data -
@@ -256,8 +253,6 @@ def create_single_df_session_inner(nwb):
         [["metadata"], dict_meta.keys()], names=["type", "variable"]
     )
 
-    # -- Merge to df_session --
-    df_session = pd.concat([df_session, df_session_stat], axis=1)
     return df_session
 
 
@@ -381,7 +376,7 @@ def create_df_events(nwb_filename, adjust_time=True, verbose=True):
             .to_dataframe()
             .reset_index()
         )
-        df = df.rename(columns={'timestamp':'timestamps', 'events':'event'})
+        df = df.rename(columns={'timestamp': 'timestamps', 'events': 'event'})
         df["timestamps_raw"] = df["timestamps"]
         df["timestamps"] = df["timestamps"] / MS_TO_S
         df["canonical"] = df["event"].map(canonical_event_name)
@@ -393,18 +388,13 @@ def create_df_events(nwb_filename, adjust_time=True, verbose=True):
     else:
         t0 = 0
 
-
-
     if adjust_time and verbose:
         print(
             "Timestamps are adjusted such that `_in_session` timestamps start at the first go cue"
         )
-        
+
     df["ses_idx"] = nwb_utils_dft.get_nwb_ses_idx(nwb)
     return df
-
-
-
 
 
 def create_df_fip(
@@ -412,7 +402,8 @@ def create_df_fip(
 ):
     """Tidy FIP for a single preprocessing variant, annotated with channel/roi.
 
-    Wraps :func: from dynamic-foraging_utils `create_df_fip`, keeps only the ``event`` series whose names end
+    Wraps :func: from dynamic-foraging_utils `create_df_fip`,
+                keeps only the ``event`` series whose names end
     in ``preprocessing`` (e.g. ``G_0_dff-bright_mc-iso-IRLS``), and adds a
     ``channel`` (Iso/Green/Red) and ``roi`` (int) column parsed from each name.
 
@@ -438,8 +429,9 @@ def create_df_fip(
         If no series match ``preprocessing`` (typically a typo in the name).
     """
     nwb_utils_dft.SESSION_ALIGNMENT = SESSION_ALIGNMENT
-    df_fip = nwb_utils_dft.create_df_fip(nwb_filename, tidy=True, adjust_time=adjust_time, verbose=verbose)
-    
+    df_fip = nwb_utils_dft.create_df_fip(nwb_filename, tidy=True,
+                                         adjust_time=adjust_time, verbose=verbose)
+
     if df_fip is None or len(df_fip) == 0:
         raise ValueError("No fiber-photometry data returned by create_df_fip.")
     df_fip["timestamps_raw"] = df_fip["timestamps"]
