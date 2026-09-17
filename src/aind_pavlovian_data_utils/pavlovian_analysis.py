@@ -40,6 +40,7 @@ import plotly.graph_objects as go  # noqa: E402
 
 from . import nwb_utils  # noqa: E402
 from aind_dynamic_foraging_data_utils.alignment import event_triggered_response # noqa: E402
+from rachel_analysis_utils import data_curation_helpers  # noqa: E402
 
 # Data-shaping constants live in nwb_utils; re-used here for viz.
 canonical_event_name = nwb_utils.canonical_event_name  # re-export for convenience
@@ -107,7 +108,17 @@ def load_pavlovian_dfs(nwb_or_path, preprocessing=DEFAULT_PREPROCESSING, adjust_
         nwb, preprocessing=preprocessing, adjust_time=adjust_time, verbose=False
     )
     subject_id, session_date = nwb_utils.parse_session_name(nwb)
-    meta = {"subject_id": subject_id, "date": session_date, "adjust_time": bool(adjust_time)}
+    # ses_idx/nwb_suffix key this recording against a curation CSV. Both are built from
+    # session_start_time rather than nwb.session_id, because a derived asset's name carries
+    # the processing date and would yield a ses_idx that matches nothing in the CSV.
+    start = getattr(nwb, "session_start_time", None)
+    meta = {
+        "subject_id": subject_id,
+        "date": session_date,
+        "adjust_time": bool(adjust_time),
+        "ses_idx": "%s_%s" % (subject_id, session_date),
+        "nwb_suffix": int(start.strftime("%H%M%S")) if start is not None else None,
+    }
     return df_events, df_fip, meta
 
 
@@ -237,6 +248,55 @@ def _channels_present(df_fip, channels=None):
     return pairs
 
 
+def _filter_channels(df_fip, channels=None):
+    """Restrict df_fip's rows to ``channels``, which elsewhere only narrows derived pairs."""
+    if not channels:
+        return df_fip
+    wanted = set(_channels_present(df_fip, channels))
+    keep = [(c, r) in wanted for c, r in zip(df_fip["channel"], df_fip["roi"])]
+    return df_fip[keep].copy()
+
+
+def _apply_curation(df_fip, curation, meta, preprocessing):
+    """Drop fibers that failed curation and tag survivors with their intended measurement.
+
+    ``curation`` is the frame from ``data_curation_helpers.load_curation``. It is keyed by
+    ``(ses_idx, patch_cord)``, neither of which ``create_df_fip`` produces, so both are
+    rebuilt here before handing off to the shared helper.
+    """
+    suffix = "" if preprocessing == "raw" else "_" + preprocessing
+    df = df_fip.copy()
+    df["ses_idx"] = meta["ses_idx"]
+    df["patch_cord"] = df["event"].astype(str).str.removesuffix(suffix)
+    df['preprocessing'] = preprocessing
+
+    df_sess = pd.DataFrame({"ses_idx": [meta["ses_idx"]], "nwb_suffix": [meta["nwb_suffix"]]})
+    curation = data_curation_helpers.drop_unchosen_recordings(curation, df_sess)
+
+    out = data_curation_helpers.apply_curation_df_fip(df, curation)
+    # apply_curation_df_fip rewrites 'event' to the curated target, falling back to the
+    # patch cord for fibers it passes through uncurated (Iso). Only the former is a real
+    # label, so leave the latter null and let the plots keep their default naming.
+    out["target"] = out["event"].where(out["event"] != out["patch_cord"])
+    return out
+
+
+def _pair_labels(df_fip):
+    """Map each (channel, roi) to its curated target, empty when no curation was applied."""
+    if "target" not in df_fip or not len(df_fip):
+        return {}
+    cols = df_fip[["channel", "roi", "target"]].dropna().drop_duplicates()
+    return {(c, r): str(t) for c, r, t in cols.itertuples(index=False)}
+
+
+def _roi_label(labels, roi, chans):
+    """Row label for one ROI: its curated targets when present, else plain 'ROIn'."""
+    targets = [labels[(c, roi)] for c in chans if (c, roi) in labels]
+    if not targets:
+        return "ROI%d" % roi
+    return "ROI%d - %s" % (roi, ", ".join(dict.fromkeys(targets)))
+
+
 def plot_session_overview(df_events, df_fip, paradigm, meta, channels=None, fig=None):
     """Whole-session traces for every channel/ROI with CS/US/lick markers.
 
@@ -245,6 +305,7 @@ def plot_session_overview(df_events, df_fip, paradigm, meta, channels=None, fig=
     pairs = _channels_present(df_fip, channels)
     rois = sorted({r for _, r in pairs})
     chans = [c for c in CHANNEL_ORDER if any(cc == c for cc, _ in pairs)]
+    labels = _pair_labels(df_fip)
 
     if fig is None:
         fig = plt.figure(figsize=(20, 3 + 1.2 * max(len(rois), 1)))
@@ -257,7 +318,13 @@ def plot_session_overview(df_events, df_fip, paradigm, meta, channels=None, fig=
             if len(sub):
                 ax.plot(sub["timestamps"], sub["data"] * 100 + off, color=CHANNEL_COLOR[c], lw=0.6)
         ax.axhline(off, ls="--", color="k", lw=0.5)
-        ax.text(df_fip["timestamps"].max(), off, "  ROI%d" % roi, va="center", fontsize=8)
+        ax.text(
+            df_fip["timestamps"].max(),
+            off,
+            "  " + _roi_label(labels, roi, chans),
+            va="center",
+            fontsize=8,
+        )
 
     def _mark(key, color, width, label):
         """Shade spans for a canonical event key and add one legend proxy."""
@@ -553,6 +620,7 @@ def plot_cs_psth_grid(
     pairs = _channels_present(df_fip, channels)
     rois = sorted({r for _, r in pairs})
     chans = [c for c in CHANNEL_ORDER if any(cc == c for cc, _ in pairs)]
+    labels = _pair_labels(df_fip)
     us_kind, cs_color, pos_lab, neg_lab = CS_INFO[cs]
 
     onsets = cls[cs]["onsets"]
@@ -593,7 +661,9 @@ def plot_cs_psth_grid(
             ax.axhline(0, color="gray", ls="--", lw=0.6)
             ax.set_xlim(-t_before, t_after)
             ax.grid(True)
-            if ri == 0:
+            if labels.get((c, roi)):
+                ax.set_title(labels[(c, roi)], fontsize=9)
+            elif ri == 0:
                 ax.set_title(c)
             if ci == 0:
                 ax.set_ylabel("ROI%d\ndF/F (%%)" % roi)
@@ -827,7 +897,9 @@ def _summary_sections(
                 ),
             )
         )
-    if "psth" in want:
+    # curation can drop every fiber; PSTH is FIP-only and subplots(0, 0) raises, whereas
+    # the remaining sections are behavioral and stay valid with no photometry at all
+    if "psth" in want and n_roi:
         for cs in paradigm["cs_list"]:
             sections.append(
                 (
@@ -920,6 +992,7 @@ def analyze_nwb(
     nwb_or_path,
     preprocessing=DEFAULT_PREPROCESSING,
     channels=None,
+    curation=None,
     save_path=None,
     plot_types=None,
     adjust_time=None,
@@ -941,6 +1014,11 @@ def analyze_nwb(
         dF/F variant suffix, e.g. ``'dff-bright_mc-iso-IRLS'``.
     channels : dict or None
         Optional ``{'<Chan>_<ROI>': 'location'}`` filter; None -> all present.
+    curation : pandas.DataFrame or None
+        Fiber curation from ``data_curation_helpers.load_curation``. Drops fibers that
+        failed curation and labels the survivors by their curated target, which takes
+        precedence over the intended measurements in ``channels``. A session whose fibers
+        are all dropped still renders its behavioral panels, with no PSTH.
     save_path : str or None
         If given, the combined single-page summary is written here as a PDF,
         and a PNG is written alongside with the same stem (``.png``).
@@ -959,6 +1037,15 @@ def analyze_nwb(
         When saved, ``pdf`` and ``png`` keys hold the output paths.
     """
     df_events, df_fip, meta = load_pavlovian_dfs(nwb_or_path, preprocessing, adjust_time)
+    df_fip = _filter_channels(df_fip, channels)
+    if curation is not None:
+        # curation treats a loaded fiber with no CSV row as an error, and create_df_fip
+        # loads every channel in the NWB, so narrow to the requested ones first -- Iso in
+        # particular appears in no curation CSV. get_nwb_processed filters at load instead.
+
+        # df_events is untouched: curation is keyed per fiber, and licks/CS/reward have no
+        # fiber dimension, so they stay valid however many fibers are dropped here.
+        df_fip = _apply_curation(df_fip, curation, meta, preprocessing)
     paradigm = detect_paradigm(df_events)
     cls = classify_trials(df_events, paradigm["cs_list"])
 
