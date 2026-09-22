@@ -62,6 +62,10 @@ CS_INFO = {
 T_BEFORE = 5.0
 T_AFTER = 15.0
 BASELINE = 5.0
+# compare-across-CS panel window (seconds, relative to CS onset)
+CMP_T_BEFORE = 1.0
+CMP_T_AFTER = 5.0
+CMP_BASELINE = 1.0
 # ETR resamples onto this grid by interpolation; it need not equal the FIP
 # acquisition rate, it only sets the output resolution (FIP is ~20 Hz).
 OUTPUT_SR = 20.0
@@ -674,6 +678,70 @@ def plot_cs_psth_grid(
     return fig
 
 
+def plot_cs_psth_compare(
+    df_fip,
+    paradigm,
+    cls,
+    meta,
+    channels=None,
+    t_before=CMP_T_BEFORE,
+    t_after=CMP_T_AFTER,
+    baseline=CMP_BASELINE,
+    output_sampling_rate=OUTPUT_SR,
+    fig=None,
+):
+    """All CS side-by-side in one row per channel/ROI, shared y-axis per row.
+
+    Same data/colors as :func:`plot_cs_psth_grid` (US-delivered solid, omission
+    dashed), but columns are CS so they can be compared directly. Draws into
+    ``fig`` (a Figure or SubFigure) when given, else creates one.
+    """
+    cs_list = paradigm["cs_list"]
+    pairs = _channels_present(df_fip, channels)
+    if not cs_list or not pairs:
+        return None
+    labels = _pair_labels(df_fip)
+    chans = [c for c in CHANNEL_ORDER if any(cc == c for cc, _ in pairs)]
+
+    if fig is None:
+        fig = plt.figure(figsize=(3.0 * len(cs_list), 3.0 * len(pairs)))
+    axes = fig.subplots(len(pairs), len(cs_list), squeeze=False, sharey="row")
+    fig.suptitle(
+        "%s %s  —  CS comparison (%.0f to %.0f s)"
+        % (meta["subject_id"], meta["date"], -abs(t_before), abs(t_after)),
+        fontsize=13,
+    )
+
+    for ri, (chan, roi) in enumerate(pairs):
+        for ci, cs in enumerate(cs_list):
+            ax = axes[ri][ci]
+            _, cs_color, pos_lab, neg_lab = CS_INFO[cs]
+            onsets = cls[cs]["onsets"]
+            pos_mask = cls[cs]["pos_mask"]
+            for times, ls, lab in (
+                (onsets[pos_mask], "-", pos_lab),
+                (onsets[~pos_mask], "--", neg_lab),
+            ):
+                t, mean, sem, n = compute_pav_cs_psth(
+                    df_fip, chan, roi, times, t_before, t_after, baseline, output_sampling_rate
+                )
+                if n > 0:
+                    ax.plot(t, mean, color=cs_color, ls=ls, label="%s (n=%d)" % (lab, n))
+                    ax.fill_between(t, mean - sem, mean + sem, color=cs_color, alpha=0.25, lw=0)
+            ax.axvspan(0, 1, color=cs_color + (0.15,))
+            ax.axhline(0, color="gray", ls="--", lw=0.6)
+            ax.set_xlim(-abs(t_before), abs(t_after))
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            if ri == 0:
+                ax.set_title(cs, fontsize=9)
+            ax.set_xlabel("Time - CS (s)")
+            if ci == 0:
+                ax.set_ylabel("%s %s\ndF/F (%%)" % (_roi_label(labels, roi, chans), chan))
+            ax.legend(fontsize=7, frameon=False)
+    return fig
+
+
 def plot_lick_quant(df_events, paradigm, cls, fig=None):
     """Anticipatory vs consummatory lick counts per trial, per CS.
 
@@ -872,7 +940,7 @@ def plot_reaction_time(df_events, fig=None):
 def _resolve_want(plot_types):
     """Resolve the requested plot set into a concrete subset of names."""
     if plot_types is None or "all" in plot_types or "all_sess" in plot_types:
-        return {"session", "psth", "lick", "antilick", "rt"}
+        return {"session", "psth", "lick", "antilick", "rt", "psth_compare_CS"}
     return set(plot_types)
 
 
@@ -922,6 +990,14 @@ def _summary_sections(
         )
     if "rt" in want and len(rews) and len(licks):
         sections.append((4.0, lambda sf: plot_reaction_time(df_events, fig=sf)))
+    if "psth_compare_CS" in want and n_roi and paradigm["cs_list"]:
+        n_pairs = len(_channels_present(df_fip, channels))
+        sections.append(
+            (
+                3.0 * max(n_pairs, 1) + 1.0,
+                lambda sf: plot_cs_psth_compare(df_fip, paradigm, cls, meta, channels, fig=sf),
+            )
+        )
     return sections
 
 
