@@ -97,7 +97,7 @@ class TestPavlovianAnalysis(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             for label, (cs_types, expect) in cases.items():
                 path = _build_pavlovian_nwb(cs_types, os.path.join(d, f"{label}.nwb"))
-                df_events, df_fip, meta = pa.load_pavlovian_dfs(path)
+                df_events, df_fip, df_trials, meta = pa.load_pavlovian_dfs(path)
                 paradigm = pa.detect_paradigm(df_events)
                 self.assertTrue(paradigm["stage"].startswith(expect))
                 cls = pa.classify_trials(df_events, paradigm["cs_list"])
@@ -108,7 +108,11 @@ class TestPavlovianAnalysis(unittest.TestCase):
 
     def test_analyze_nwb_writes_pdf_and_png(self):
         """analyze_nwb writes a single-page PDF plus a PNG and returns a summary."""
-        from pypdf import PdfReader
+        # pypdf is the renamed PyPDF2; either provides PdfReader with a .pages list
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            from PyPDF2 import PdfReader
 
         with tempfile.TemporaryDirectory() as d:
             path = _build_pavlovian_nwb(["CS1", "CS2", "CS3", "CS4"], os.path.join(d, "s3.nwb"))

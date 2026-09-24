@@ -15,6 +15,8 @@ Public functions:
     plot_cs_psth_grid
     plot_lick_quant
     plot_reaction_time
+    process_nwb
+    plot_nwb_summary
     analyze_nwb
 
 The paradigm (how many CS, reward-only vs reward+airpuff) is inferred from the
@@ -41,6 +43,7 @@ import plotly.graph_objects as go  # noqa: E402
 from . import nwb_utils  # noqa: E402
 from aind_dynamic_foraging_data_utils.alignment import event_triggered_response # noqa: E402
 from rachel_analysis_utils import data_curation_helpers  # noqa: E402
+from rachel_analysis_utils.nwb_utils import dummy_nwb  # noqa: E402
 
 # Data-shaping constants live in nwb_utils; re-used here for viz.
 canonical_event_name = nwb_utils.canonical_event_name  # re-export for convenience
@@ -77,12 +80,19 @@ ANTILICK_SUMMARY = "mean"  # 'mean' -> mean +/- SD, 'median' -> median +/- IQR
 ANTILICK_SWARM_WIDTH = 0.28
 
 
-def load_pavlovian_dfs(nwb_or_path, preprocessing=DEFAULT_PREPROCESSING, adjust_time=None):
-    """Load the analysis-ready events / FIP dataframes for one session.
+def load_pavlovian_dfs(
+    nwb_or_path,
+    preprocessing=DEFAULT_PREPROCESSING,
+    adjust_time=None,
+    channels=None,
+    curation=None,
+):
+    """Load the analysis-ready dataframes for one session.
 
     Thin orchestration over ``nwb_utils`` (which does all the NWB manipulation:
     ms->s conversion, ``adjust_time`` alignment, canonical event labels, and the
-    ``preprocessing`` filter with ``channel``/``roi`` parsing).
+    ``preprocessing`` filter with ``channel``/``roi`` parsing), plus the channel
+    filter and fiber curation, so the frames come back ready to plot.
 
     Parameters
     ----------
@@ -93,15 +103,23 @@ def load_pavlovian_dfs(nwb_or_path, preprocessing=DEFAULT_PREPROCESSING, adjust_
     adjust_time : bool or None
         Align time to the first CS. ``None`` -> auto (True when the session has a
         ``CS_start_time`` trials column, else False).
+    channels : dict or None
+        Optional ``{'<Chan>_<ROI>': 'location'}`` filter; ``None`` -> keep all.
+    curation : pandas.DataFrame or None
+        Fiber curation from ``data_curation_helpers.load_curation``; drops fibers that
+        failed curation and labels the survivors by their curated target.
 
     Returns
     ----------
     df_events : pandas.DataFrame
         Tidy events with ``timestamps`` (s), ``event`, ``trial``, ``canonical``.
     df_fip : pandas.DataFrame
-        Tidy FIP for the selected variant with ``channel`` / ``roi``.
+        Tidy FIP for the selected variant with ``channel`` / ``roi``, filtered and
+        curated.
+    df_trials : pandas.DataFrame
+        Per-trial table for this session.
     meta : dict
-        ``subject_id``, ``date``, ``adjust_time``.
+        ``subject_id``, ``date``, ``adjust_time``, ``ses_idx``, ``nwb_suffix``.
     """
     nwb = nwb_utils.load_nwb_from_filename(nwb_or_path)
     if adjust_time is None:
@@ -111,6 +129,7 @@ def load_pavlovian_dfs(nwb_or_path, preprocessing=DEFAULT_PREPROCESSING, adjust_
     df_fip = nwb_utils.create_df_fip(
         nwb, preprocessing=preprocessing, adjust_time=adjust_time, verbose=False
     )
+    df_trials = nwb_utils.create_df_trials(nwb, adjust_time=adjust_time, verbose=False)
     subject_id, session_date = nwb_utils.parse_session_name(nwb)
     # ses_idx/nwb_suffix key this recording against a curation CSV. Both are built from
     # session_start_time rather than nwb.session_id, because a derived asset's name carries
@@ -123,7 +142,18 @@ def load_pavlovian_dfs(nwb_or_path, preprocessing=DEFAULT_PREPROCESSING, adjust_
         "ses_idx": "%s_%s" % (subject_id, session_date),
         "nwb_suffix": int(start.strftime("%H%M%S")) if start is not None else None,
     }
-    return df_events, df_fip, meta
+
+    df_fip = _filter_channels(df_fip, channels)
+    if curation is not None:
+        # curation treats a loaded fiber with no CSV row as an error, and create_df_fip
+        # loads every channel in the NWB, so narrow to the requested ones first -- Iso in
+        # particular appears in no curation CSV. get_nwb_processed filters at load instead.
+
+        # df_events is untouched: curation is keyed per fiber, and licks/CS/reward have no
+        # fiber dimension, so they stay valid however many fibers are dropped here.
+        df_fip = _apply_curation(df_fip, curation, meta, preprocessing)
+
+    return df_events, df_fip, df_trials, meta
 
 
 def detect_paradigm(df_events):
@@ -1064,6 +1094,182 @@ def _build_summary(paradigm, cls, meta, chan_labels, n_roi):
     return summary
 
 
+def _as_dummy_nwb(df_trials, df_events, df_fip, meta):
+    """Bundle one session's frames into a ``rachel_analysis_utils`` ``dummy_nwb``.
+
+    The frames all carry ``ses_idx``, which is what ``dummy_nwb`` keys on, so the
+    object is interchangeable with the ones built straight from the foraging pipeline
+    (and can be saved/reloaded with the same helpers). ``stage`` is attached on top so
+    a session can be labelled without re-reading its events.
+    """
+    ses_idx = meta["ses_idx"]
+    if len(df_fip):
+        nwb = dummy_nwb(df_trials, df_events, df_fip, ses_idx=ses_idx)
+    else:
+        # dummy_nwb asserts the session has FIP rows, but curation may legitimately drop
+        # every fiber and the behavioral half stays valid, so build it directly instead
+        # (the same way dummy_nwb.load does).
+        warnings.warn("no FIP data left for %s; building a behavior-only nwb" % ses_idx)
+        nwb = dummy_nwb.__new__(dummy_nwb)
+        nwb.session_id = ses_idx
+        nwb.df_trials = df_trials
+        nwb.df_events = df_events
+        nwb.df_fip = df_fip
+        nwb.nwb_file_loc = None
+    nwb.stage = meta["stage"]
+    return nwb
+
+
+def process_nwb(
+    nwb_or_path,
+    preprocessing=DEFAULT_PREPROCESSING,
+    channels=None,
+    curation=None,
+    adjust_time=None,
+    antilick_window=ANTILICK_WINDOW,
+):
+    """Load one Pavlovian session into a ``dummy_nwb``, with its numeric summary.
+
+    The data half of :func:`analyze_nwb`: it reads, filters, curates, detects the
+    paradigm and classifies trials, but draws nothing. Pass the returned object to
+    :func:`plot_nwb_summary` for the single-page figure, save it with
+    ``rachel_analysis_utils.nwb_utils`` (``nwb.save`` / ``save_nwb_list``), or collect
+    several to plot across sessions. Session-level facts are returned separately in
+    ``meta``; collecting those across sessions is what makes a ``df_sess``.
+
+    Parameters
+    ----------
+    nwb_or_path : str or NWBFile
+        A combined behavior+fiber NWB (path or object).
+    preprocessing : str
+        dF/F variant suffix, e.g. ``'dff-bright_mc-iso-IRLS'``.
+    channels : dict or None
+        Optional ``{'<Chan>_<ROI>': 'location'}`` filter; None -> all present.
+    curation : pandas.DataFrame or None
+        Fiber curation from ``data_curation_helpers.load_curation``. Drops fibers that
+        failed curation and labels the survivors by their curated target, which takes
+        precedence over the intended measurements in ``channels``. A session whose fibers
+        are all dropped still yields behavioral frames, with an empty ``df_fip``.
+    adjust_time : bool or None
+        Align time to the first CS. ``None`` -> auto.
+    antilick_window : tuple
+        ``(start, end)`` seconds after CS onset for the anticipatory-lick count.
+
+    Returns
+    -------
+    summary : dict
+        Stage, per-CS trial counts (with anticipatory-lick numbers), channels, roi count.
+    nwb : rachel_analysis_utils.nwb_utils.dummy_nwb
+        Carries ``df_trials``, ``df_events``, ``df_fip`` (already channel-filtered and
+        curated) and ``session_id``, plus a ``stage`` attribute.
+    meta : dict
+        ``load_pavlovian_dfs`` metadata plus ``stage`` and ``cs_list`` from the
+        detected paradigm.
+    """
+    df_events, df_fip, df_trials, meta = load_pavlovian_dfs(
+        nwb_or_path, preprocessing, adjust_time, channels=channels, curation=curation
+    )
+
+    paradigm = detect_paradigm(df_events)
+    cls = classify_trials(df_events, paradigm["cs_list"])
+    # carry the paradigm on meta so downstream groupings (dummy_nwb objects, across-session
+    # plots) can label a session by stage without re-reading its events
+    meta = dict(meta, stage=paradigm["stage"], cs_list=paradigm["cs_list"])
+
+    pairs = _channels_present(df_fip, channels)
+    chan_labels = [c for c in CHANNEL_ORDER if any(cc == c for cc, _ in pairs)]
+    n_roi = len({r for _, r in pairs})
+
+    summary = _build_summary(paradigm, cls, meta, chan_labels, n_roi)
+
+    # anticipatory-lick numbers into the per-CS summary (also lands in the JSON)
+    anti = _anticipatory_summary(df_events, paradigm, cls, antilick_window)
+    for cs, rec in anti.items():
+        summary["cs"].get(cs, {}).update(rec)
+
+    return summary, _as_dummy_nwb(df_trials, df_events, df_fip, meta), meta
+
+
+def plot_nwb_summary(
+    nwb,
+    meta,
+    channels=None,
+    save_path=None,
+    plot_types=None,
+    t_before=T_BEFORE,
+    t_after=T_AFTER,
+    baseline=BASELINE,
+    output_sampling_rate=OUTPUT_SR,
+    antilick_window=ANTILICK_WINDOW,
+    antilick_summary=ANTILICK_SUMMARY,
+    antilick_swarm_width=ANTILICK_SWARM_WIDTH,
+):
+    """Render (and optionally save) the single-page summary for one session.
+
+    The plotting half of :func:`analyze_nwb`. Takes the ``dummy_nwb`` and ``meta``
+    from :func:`process_nwb` and re-derives the paradigm and trial classification from
+    ``nwb.df_events``, so no analysis state has to be threaded through.
+
+    Parameters
+    ----------
+    nwb : dummy_nwb
+        Needs ``df_events`` and ``df_fip``; ``df_fip`` is drawn as given, so filter
+        and curate before building the object.
+    meta : dict
+        Needs ``subject_id`` and ``date`` for the titles.
+    channels : dict or None
+        Optional ``{'<Chan>_<ROI>': 'location'}`` filter on the panels drawn.
+    save_path : str or None
+        If given, the page is written here as a PDF, and a PNG alongside it with the
+        same stem (``.png``).
+    plot_types : list or None
+        ``['all_sess']``/``['all']`` -> everything, or a subset of
+        ``{'session','psth','lick','antilick','rt','psth_compare_CS'}``.
+    antilick_window : tuple
+        ``(start, end)`` seconds after CS onset for the anticipatory-lick count.
+    antilick_summary : str
+        ``'mean'`` (mean +/- SD) or ``'median'`` (median +/- IQR).
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure or None
+        ``None`` when there was nothing to draw. Closed (but still displayable) once
+        saved, so a batch run does not accumulate open figures.
+    paths : dict
+        ``{'pdf': ..., 'png': ...}`` when saved, empty otherwise.
+    """
+    df_events, df_fip = nwb.df_events, nwb.df_fip
+    paradigm = detect_paradigm(df_events)
+    cls = classify_trials(df_events, paradigm["cs_list"])
+    want = _resolve_want(plot_types)
+    psth_kw = {
+        "t_before": t_before,
+        "t_after": t_after,
+        "baseline": baseline,
+        "output_sampling_rate": output_sampling_rate,
+    }
+    antilick_kw = {
+        "window_s": antilick_window,
+        "summary": antilick_summary,
+        "swarm_width": antilick_swarm_width,
+    }
+    fig = render_summary_figure(
+        df_events, df_fip, paradigm, cls, meta, channels, want, psth_kw, antilick_kw
+    )
+
+    paths = {}
+    if fig is not None and save_path:
+        pdf_path = save_path if save_path.endswith(".pdf") else save_path + ".pdf"
+        png_path = pdf_path[:-4] + ".png"
+        fig.savefig(pdf_path)
+        fig.savefig(png_path, dpi=PNG_DPI)
+        plt.close(fig)
+        paths = {"pdf": pdf_path, "png": png_path}
+        print("[saved] %s" % pdf_path)
+        print("[saved] %s" % png_path)
+    return fig, paths
+
+
 def analyze_nwb(
     nwb_or_path,
     preprocessing=DEFAULT_PREPROCESSING,
@@ -1082,29 +1288,9 @@ def analyze_nwb(
 ):
     """End-to-end: load -> detect -> classify -> visualize a Pavlovian session.
 
-    Parameters
-    ----------
-    nwb_or_path : str or NWBFile
-        A combined behavior+fiber NWB (path or object).
-    preprocessing : str
-        dF/F variant suffix, e.g. ``'dff-bright_mc-iso-IRLS'``.
-    channels : dict or None
-        Optional ``{'<Chan>_<ROI>': 'location'}`` filter; None -> all present.
-    curation : pandas.DataFrame or None
-        Fiber curation from ``data_curation_helpers.load_curation``. Drops fibers that
-        failed curation and labels the survivors by their curated target, which takes
-        precedence over the intended measurements in ``channels``. A session whose fibers
-        are all dropped still renders its behavioral panels, with no PSTH.
-    save_path : str or None
-        If given, the combined single-page summary is written here as a PDF,
-        and a PNG is written alongside with the same stem (``.png``).
-    plot_types : list or None
-        ``['all_sess']``/``['all']`` -> everything, or a subset of
-        ``{'session','psth','lick','antilick','rt'}``.
-    antilick_window : tuple
-        ``(start, end)`` seconds after CS onset for the anticipatory-lick count.
-    antilick_summary : str
-        ``'mean'`` (mean +/- SD) or ``'median'`` (median +/- IQR).
+    Thin wrapper over :func:`process_nwb` + :func:`plot_nwb_summary`; call those two
+    directly when you also want the dataframes. Arguments are as documented on the
+    two halves.
 
     Returns
     -------
@@ -1112,55 +1298,30 @@ def analyze_nwb(
         Summary with stage, per-CS trial counts, channels, and roi count.
         When saved, ``pdf`` and ``png`` keys hold the output paths.
     """
-    df_events, df_fip, meta = load_pavlovian_dfs(nwb_or_path, preprocessing, adjust_time)
-    df_fip = _filter_channels(df_fip, channels)
-    if curation is not None:
-        # curation treats a loaded fiber with no CSV row as an error, and create_df_fip
-        # loads every channel in the NWB, so narrow to the requested ones first -- Iso in
-        # particular appears in no curation CSV. get_nwb_processed filters at load instead.
-
-        # df_events is untouched: curation is keyed per fiber, and licks/CS/reward have no
-        # fiber dimension, so they stay valid however many fibers are dropped here.
-        df_fip = _apply_curation(df_fip, curation, meta, preprocessing)
-    paradigm = detect_paradigm(df_events)
-    cls = classify_trials(df_events, paradigm["cs_list"])
-
-    want = _resolve_want(plot_types)
-    pairs = _channels_present(df_fip, channels)
-    chan_labels = [c for c in CHANNEL_ORDER if any(cc == c for cc, _ in pairs)]
-    n_roi = len({r for _, r in pairs})
-
-    summary = _build_summary(paradigm, cls, meta, chan_labels, n_roi)
-
-    # anticipatory-lick numbers into the per-CS summary (also lands in the JSON)
-    anti = _anticipatory_summary(df_events, paradigm, cls, antilick_window)
-    for cs, rec in anti.items():
-        summary["cs"].get(cs, {}).update(rec)
+    summary, nwb, meta = process_nwb(
+        nwb_or_path,
+        preprocessing=preprocessing,
+        channels=channels,
+        curation=curation,
+        adjust_time=adjust_time,
+        antilick_window=antilick_window,
+    )
 
     if save_path:
-        psth_kw = {
-            "t_before": t_before,
-            "t_after": t_after,
-            "baseline": baseline,
-            "output_sampling_rate": output_sampling_rate,
-        }
-        antilick_kw = {
-            "window_s": antilick_window,
-            "summary": antilick_summary,
-            "swarm_width": antilick_swarm_width,
-        }
-        fig = render_summary_figure(
-            df_events, df_fip, paradigm, cls, meta, channels, want, psth_kw, antilick_kw
+        _fig, paths = plot_nwb_summary(
+            nwb,
+            meta,
+            channels=channels,
+            save_path=save_path,
+            plot_types=plot_types,
+            t_before=t_before,
+            t_after=t_after,
+            baseline=baseline,
+            output_sampling_rate=output_sampling_rate,
+            antilick_window=antilick_window,
+            antilick_summary=antilick_summary,
+            antilick_swarm_width=antilick_swarm_width,
         )
-        if fig is not None:
-            pdf_path = save_path if save_path.endswith(".pdf") else save_path + ".pdf"
-            png_path = pdf_path[:-4] + ".png"
-            fig.savefig(pdf_path)
-            fig.savefig(png_path, dpi=PNG_DPI)
-            plt.close(fig)
-            summary["pdf"] = pdf_path
-            summary["png"] = png_path
-            print("[saved] %s" % pdf_path)
-            print("[saved] %s" % png_path)
+        summary.update(paths)
 
     return summary
