@@ -63,6 +63,7 @@ OUTPUT_SR = 20.0
 # anticipatory-lick summary defaults
 ANTILICK_WINDOW = (0.0, 2.0)  # seconds after CS onset (CS->US delay)
 ANTILICK_SUMMARY = "mean"  # 'mean' -> mean +/- SD, 'median' -> median +/- IQR
+REW_WINDOW = (2.0, 4.0)  # seconds after CS onset for reward/US response
 
 
 def load_pavlovian_dfs(
@@ -451,3 +452,108 @@ def process_nwb(
         summary["cs"].get(cs, {}).update(rec)
 
     return summary, _as_dummy_nwb(df_trials, df_events, df_fip, meta), meta
+
+
+def enrich_df_trials(
+    nwb,
+    channels=None,
+    preprocessing=DEFAULT_PREPROCESSING,
+    cs_window=ANTILICK_WINDOW,
+    rew_window=REW_WINDOW,
+    baseline_window=(-2.0, 0.0),
+    antilick_window=ANTILICK_WINDOW,
+):
+    """Add per-trial FIP response and anticipatory-lick columns to df_trials (in place).
+
+    Accepts either a ``dummy_nwb`` (which already carries pre-computed dataframes as
+    ``df_trials``, ``df_events``, ``df_fip`` attributes) or a raw NWBFile — missing
+    attributes are built via ``nwb_utils``.
+
+    ``df_trials`` must already have ``CS_type`` and ``CS_start_time_in_session`` columns
+    (produced by ``nwb_utils.create_df_trials``). New columns added for CS rows:
+
+      - ``antilick``                  : lick count in ``antilick_window`` after CS onset
+      - ``cs_response_<event>``       : mean dF/F in ``cs_window`` after CS onset,
+                                        baseline-subtracted (one column per fiber)
+      - ``rew_response_<event>``      : mean dF/F in ``rew_window`` after CS onset,
+                                        baseline-subtracted (one column per fiber)
+
+    ``<event>`` is the fiber's ``patch_cord`` label (e.g. ``G_0``, ``R_1``).
+
+    All timestamps are in session time (seconds), matching ``df_events["timestamps"]``
+    and ``df_fip["timestamps"]``.
+
+    Parameters
+    ----------
+    nwb : dummy_nwb or NWBFile
+        Session object. Attributes ``df_trials``, ``df_events``, ``df_fip`` are used
+        when present; otherwise built from the raw NWB via ``nwb_utils``.
+    preprocessing : str
+        dF/F variant suffix used when ``df_fip`` must be built from a raw NWBFile.
+    cs_window : tuple
+        ``(t0, t1)`` seconds after CS onset for the CS-response metric.
+    rew_window : tuple
+        ``(t0, t1)`` seconds after CS onset for the reward-response metric.
+    baseline_window : tuple
+        ``(t0, t1)`` seconds relative to CS onset used as the pre-event baseline.
+    antilick_window : tuple
+        ``(t0, t1)`` seconds after CS onset for the anticipatory-lick count.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The enriched df_trials (modified in place when taken from a dummy_nwb).
+    """
+    df_trials = getattr(nwb, "df_trials", None)
+    if df_trials is None:
+        df_trials = nwb_utils.create_df_trials(nwb, verbose=False)
+    df_events = getattr(nwb, "df_events", None)
+    if df_events is None:
+        df_events = nwb_utils.create_df_events(nwb, verbose=False)
+    df_fip = getattr(nwb, "df_fip", None)
+    if df_fip is None:
+        df_fip = nwb_utils.create_df_fip(nwb, preprocessing=preprocessing, verbose=False)
+
+    fip_df = _filter_channels(df_fip, channels) if (len(df_fip) > 0 and channels) else df_fip
+    events = list(fip_df["event"].unique()) if len(fip_df) > 0 else []
+
+    df_trials["antilick"] = np.nan
+    for ev in events:
+        df_trials["cs_response_%s" % ev] = np.nan
+        df_trials["rew_response_%s" % ev] = np.nan
+
+    licks = df_events.loc[df_events["canonical"] == "Lick", "timestamps"].to_numpy(float)
+    b0, b1 = baseline_window
+    c0, c1 = cs_window
+    r0, r1 = rew_window
+
+    # Pre-slice FIP arrays per event to avoid repeated filtering in the trial loop
+    fip_cache = {}
+    for ev in events:
+        sub = fip_df[fip_df["event"] == ev].sort_values("timestamps")
+        fip_cache[ev] = (sub["timestamps"].to_numpy(float), sub["data"].to_numpy(float) * 100.0)
+
+    # Group by CS_type so _anticipatory_lick_counts runs once per CS (vectorized)
+    for cs_type, group in df_trials[df_trials["CS_type"].notna()].groupby("CS_type"):
+        onsets = group["CS_start_time_in_session"].to_numpy(float)
+        idxs = group.index
+
+        df_trials.loc[idxs, "antilick"] = _anticipatory_lick_counts(licks, onsets, antilick_window)
+
+        for ev in events:
+            ts, vals = fip_cache[ev]
+            cs_resps = np.full(len(onsets), np.nan)
+            rew_resps = np.full(len(onsets), np.nan)
+            for i, onset in enumerate(onsets):
+                base_mask = (ts >= onset + b0) & (ts < onset + b1)
+                base = np.nanmean(vals[base_mask]) if base_mask.any() else 0.0
+                cs_mask = (ts >= onset + c0) & (ts < onset + c1)
+                if cs_mask.any():
+                    cs_resps[i] = np.nanmean(vals[cs_mask]) - base
+                rew_mask = (ts >= onset + r0) & (ts < onset + r1)
+                if rew_mask.any():
+                    rew_resps[i] = np.nanmean(vals[rew_mask]) - base
+            df_trials.loc[idxs, "cs_response_%s" % ev] = cs_resps
+            df_trials.loc[idxs, "rew_response_%s" % ev] = rew_resps
+
+    return df_trials

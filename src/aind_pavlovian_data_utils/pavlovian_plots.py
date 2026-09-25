@@ -13,6 +13,8 @@ Public functions:
     plot_lick_quant
     plot_anticipatory_lick_summary
     plot_reaction_time
+    plot_cs_response_summary
+    psth_CS_fip
     render_summary_figure
     plot_nwb_summary
 """
@@ -27,6 +29,7 @@ import numpy as np  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import pandas as pd  # noqa: E402
 
+from .nwb_utils import parse_session_name  # noqa: E402
 from .pavlovian_analysis import (  # noqa: E402
     CHANNEL_MAP,
     CHANNEL_ORDER,
@@ -34,6 +37,7 @@ from .pavlovian_analysis import (  # noqa: E402
     OUTPUT_SR,
     ANTILICK_WINDOW,
     ANTILICK_SUMMARY,
+    REW_WINDOW,
     DEFAULT_PREPROCESSING,
     _channels_present,
     _anticipatory_lick_counts,
@@ -597,12 +601,13 @@ def plot_anticipatory_lick_summary(
         fig = plt.figure(figsize=(max(4.2, 1.6 * len(names) + 2.0), 3.6))
     ax = fig.subplots()
 
-    tick_pos, tick_lab, all_counts = [], [], []
+    tick_pos, tick_lab, all_counts, centers = [], [], [], []
     for i, cs in enumerate(names):
         counts = _anticipatory_lick_counts(licks, cls[cs]["onsets"], window_s)
         all_counts.append(counts)
         col = CS_INFO[cs][1]
         swarm_x, summ_x = i - 0.18, i + 0.22
+        center = None
         if len(counts):
             dx = _beeswarm_offsets(counts.astype(float), swarm_width)
             ax.scatter(
@@ -632,6 +637,7 @@ def plot_anticipatory_lick_summary(
                 zorder=3,
             )
             ax.plot(summ_x, center, "o", color="black", ms=7, zorder=4)
+        centers.append(center)
         tick_pos.append(i)
         tick_lab.append(_antilick_label(cs, cls))
 
@@ -641,6 +647,12 @@ def plot_anticipatory_lick_summary(
     ax.set_xlim(-0.6, len(names) - 0.4)
     ymax = max((c.max() for c in all_counts if len(c)), default=1)
     ax.set_ylim(-0.5, ymax * 1.08 + 1)
+    # summary stat at the top of each column; only the first is prefixed with its name
+    stat_label = "med" if summary == "median" else "avg"
+    for i, center in enumerate(centers):
+        if center is not None:
+            txt = "%s %.1f" % (stat_label, center) if i == 0 else "%.1f" % center
+            ax.text(i, ax.get_ylim()[1], txt, ha="center", va="top", fontsize=8)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.tick_params(direction="out", length=4)
@@ -680,6 +692,7 @@ def plot_reaction_time(df_events, fig=None):
     ax[1].set_xlabel("RT (s)")
     ax[2].set_xlabel("RT < 0.5 s")
     return fig
+
 
 
 def _resolve_want(plot_types):
@@ -782,8 +795,8 @@ def render_summary_figure(
 
 def plot_nwb_summary(
     nwb,
-    meta,
     channels=None,
+    meta=None,
     save_path=None,
     plot_types=None,
     t_before=T_BEFORE,
@@ -829,6 +842,9 @@ def plot_nwb_summary(
         ``{'pdf': ..., 'png': ...}`` when saved, empty otherwise.
     """
     df_events, df_fip = nwb.df_events, nwb.df_fip
+    if meta is None:
+        subject_id, session_date = parse_session_name(nwb)
+        meta = {"subject_id": subject_id, "date": session_date}
     paradigm = detect_paradigm(df_events)
     cls = classify_trials(df_events, paradigm["cs_list"])
     want = _resolve_want(plot_types)
@@ -860,3 +876,147 @@ def plot_nwb_summary(
     return fig, paths
 
 
+
+def _beeswarm_group(ax, x_pos, values, color, summary, swarm_width, alpha=0.70, summary_color="black"):
+    """Draw one beeswarm column + mean/median summary marker at x_pos.
+
+    Returns the summary center (mean or median), or None if there was no data.
+    """
+    values = np.asarray(values, float)
+    valid = values[~np.isnan(values)]
+    if not len(valid):
+        return None
+    dx = _beeswarm_offsets(valid, swarm_width)
+    ax.scatter(x_pos - 0.18 + dx, valid, s=20, facecolor=color, edgecolor="white",
+               linewidth=0.3, alpha=alpha, zorder=2)
+    if summary == "median":
+        center = float(np.median(valid))
+        lo = float(np.percentile(valid, 25))
+        hi = float(np.percentile(valid, 75))
+    else:
+        center = float(np.mean(valid))
+        sd = float(np.std(valid))
+        lo, hi = center - sd, center + sd
+    ax.plot([x_pos + 0.22, x_pos + 0.22], [lo, hi], color=summary_color, lw=3.2,
+            solid_capstyle="round", zorder=3)
+    ax.plot(x_pos + 0.22, center, "o", color=summary_color, ms=7, zorder=4)
+    return center
+
+
+def psth_CS_fip(
+    nwb,
+    channels=None,
+    meta=None,
+    antilick_window=ANTILICK_WINDOW,
+    summary=ANTILICK_SUMMARY,
+    swarm_width=ANTILICK_SWARM_WIDTH,
+    fig=None,
+):
+    """Per-fiber summary figure: beeswarm row + PSTH comparison row.
+
+    For each fiber (unique event in df_fip), draws two rows:
+
+    Row 1 — behavioral + scalar FIP:
+      - Left panel  : anticipatory lick beeswarm per CS via
+                      :func:`plot_anticipatory_lick_summary`
+      - Right panel : CS response and reward response beeswarms (rewarded trials only),
+                      using ``cs_response_<event>`` / ``rew_response_<event>`` columns
+                      added by :func:`pavlovian_analysis.enrich_df_trials`
+
+    Row 2 — PSTH comparison (:func:`plot_cs_psth_compare`) for that fiber only.
+
+    Returns ``None`` if df_fip is empty.
+    """
+    df_fip = nwb.df_fip
+    df_events = nwb.df_events
+    df_trials = nwb.df_trials
+
+    # channels should already be filtered
+    # df_fip = _filter_channels(df_fip, channels) if channels else df_fip
+    if df_fip is None or len(df_fip) == 0:
+        return None
+
+    if meta is None:
+        subject_id, session_date = parse_session_name(nwb)
+        meta = {"subject_id": subject_id, "date": session_date}
+
+    events = list(df_fip["event"].unique())
+    paradigm = detect_paradigm(df_events)
+    cls = classify_trials(df_events, paradigm["cs_list"])
+    cs_list = paradigm["cs_list"]
+    n_cs = len(cs_list)
+    n_fibers = len(events)
+
+    if fig is None:
+        fig = plt.figure(figsize=(18, 5.5 * n_fibers), layout="constrained")
+
+    fiber_sfs = fig.subfigures(n_fibers, 1)
+    if n_fibers == 1:
+        fiber_sfs = [fiber_sfs]
+
+    rewarded_df = df_trials[df_trials["rewarded"] == True] if df_trials is not None else None
+
+    for sf, ev in zip(fiber_sfs, events):
+        top_sf, bot_sf = sf.subfigures(2, 1, height_ratios=[1.2, 2.0])
+        lick_sf, resp_sf = top_sf.subfigures(1, 2)
+
+        # --- Left: reuse plot_anticipatory_lick_summary ---
+        plot_anticipatory_lick_summary(
+            df_events, paradigm, cls, meta,
+            window_s=antilick_window, summary=summary,
+            swarm_width=swarm_width, fig=lick_sf,
+        )
+
+        # --- Right: CS response + rew response (rewarded trials only) ---
+        ax_resp = resp_sf.subplots()
+        cs_col = "cs_response_%s" % ev
+        rew_col = "rew_response_%s" % ev
+        GAP = 1
+        us_offset = n_cs + GAP
+
+        if rewarded_df is not None and cs_col in df_trials.columns:
+            cs_centers, rew_centers = [], []
+            for j, cs in enumerate(cs_list):
+                cs_df = rewarded_df[rewarded_df["CS_type"] == cs]
+                color = CS_INFO[cs][1]
+                cs_centers.append(_beeswarm_group(ax_resp, j,
+                                cs_df[cs_col].dropna().to_numpy(float),
+                                color, summary, swarm_width))
+                rew_centers.append(_beeswarm_group(ax_resp, us_offset + j,
+                                cs_df[rew_col].dropna().to_numpy(float),
+                                color, summary, swarm_width))
+
+            ax_resp.axhline(0, ls="--", color="gray", lw=0.8)
+            ax_resp.axvline(n_cs - 0.5 + GAP / 2, ls=":", color="gray", lw=1, alpha=0.5)
+            xlim = (-0.6, us_offset + n_cs - 0.4)
+            ax_resp.set_xlim(*xlim)
+            ax_resp.set_xticks(list(range(n_cs)) + [us_offset + j for j in range(n_cs)])
+            ax_resp.set_xticklabels([cs for cs in cs_list] + [cs for cs in cs_list], fontsize=8)
+            ax_resp.set_ylabel("%s\nΔF/F (%%)" % ev)
+
+            # summary stat above each column; only the first of each group is prefixed
+            stat_label = "med" if summary == "median" else "avg"
+            ymax = ax_resp.get_ylim()[1]
+            for j, center in enumerate(cs_centers):
+                if center is not None:
+                    txt = "%s %.1f" % (stat_label, center) if j == 0 else "%.1f" % center
+                    ax_resp.text(j, ymax, txt, ha="center", va="top", fontsize=7)
+            for j, center in enumerate(rew_centers):
+                if center is not None:
+                    txt = "%s %.1f" % (stat_label, center) if j == 0 else "%.1f" % center
+                    ax_resp.text(us_offset + j, ymax, txt, ha="center", va="top", fontsize=7)
+
+            x_range = xlim[1] - xlim[0]
+            ax_resp.text(((n_cs - 1) / 2 - xlim[0]) / x_range, 1.03,
+                         "CS response", transform=ax_resp.transAxes,
+                         ha="center", va="bottom", fontsize=8)
+            ax_resp.text((us_offset + (n_cs - 1) / 2 - xlim[0]) / x_range, 1.03,
+                         "Rew response", transform=ax_resp.transAxes,
+                         ha="center", va="bottom", fontsize=8)
+        ax_resp.spines["top"].set_visible(False)
+        ax_resp.spines["right"].set_visible(False)
+
+        # --- Bottom: PSTH comparison for this fiber only ---
+        plot_cs_psth_compare(df_fip[df_fip["event"] == ev], paradigm, cls, meta, fig=bot_sf)
+
+    return fig

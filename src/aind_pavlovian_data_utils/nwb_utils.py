@@ -85,8 +85,19 @@ def parse_session_name(nwb_filename):
     ``behavior_<subject>_<expdate>_..._processed_<procdate>_...`` (or reordered),
     so a name-based date can pick up the packaging/processing date instead of
     when the experiment was actually run.
+
+    Accepts a path, a real NWBFile, or a ``dummy_nwb``. Only a path is opened from
+    disk. A ``dummy_nwb`` has no ``subject`` / ``session_start_time``, but its
+    ``session_id`` is the ``ses_idx`` (``<subject>_<YYYY-MM-DD>``) that was itself
+    built upstream from ``session_start_time``, so reading it back is exact and
+    does not reintroduce the asset-name problem described above.
     """
-    nwb = load_nwb_from_filename(nwb_filename)
+    # only a path needs opening; an NWBFile or dummy_nwb is already in hand
+    nwb = load_nwb_from_filename(nwb_filename) if isinstance(nwb_filename, str) else nwb_filename
+
+    if hasattr(nwb, "df_events"):  # dummy_nwb — session_id is the ses_idx
+        subject_id, _, session_date = str(getattr(nwb, "session_id", "") or "").partition("_")
+        return subject_id or None, session_date or None
 
     subj = getattr(nwb, "subject", None)
     subject_id = getattr(subj, "subject_id", None) if subj is not None else None
@@ -94,12 +105,12 @@ def parse_session_name(nwb_filename):
         session_id = str(nwb.session_id or "")
         splits = session_id.split("_")
         if session_id.startswith("behavior") or session_id.startswith("FIP"):
-            subject_id = splits[1] if len(splits) > 1 else "unknown"
+            subject_id = splits[1] if len(splits) > 1 else None
         else:
-            subject_id = splits[0] if splits and splits[0] else "unknown"
+            subject_id = splits[0] if splits and splits[0] else None
 
     start = getattr(nwb, "session_start_time", None)
-    session_date = start.strftime("%Y-%m-%d") if start is not None else "unknown"
+    session_date = start.strftime("%Y-%m-%d") if start is not None else None
     return str(subject_id), str(session_date)
 
 
