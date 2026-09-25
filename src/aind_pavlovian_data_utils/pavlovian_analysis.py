@@ -62,7 +62,7 @@ OUTPUT_SR = 20.0
 
 # anticipatory-lick summary defaults
 ANTILICK_WINDOW = (0.0, 2.0)  # seconds after CS onset (CS->US delay)
-ANTILICK_SUMMARY = "mean"  # 'mean' -> mean +/- SD, 'median' -> median +/- IQR
+ANTILICK_SUMMARY_STAT = "mean"  # 'mean' -> mean +/- SD, 'median' -> median +/- IQR
 REW_WINDOW = (2.0, 4.0)  # seconds after CS onset for reward/US response
 
 
