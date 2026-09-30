@@ -1013,11 +1013,13 @@ def psth_CS_fip(
         x_nrew = 2 * (n_cs + GAP)
 
         if df_trials is not None and cs_col in df_trials.columns:
-            rewarded = df_trials["rewarded"].fillna(False).astype(bool)
+            us_response = df_trials.index.isin(
+                df_trials.query("US_type == 'EarnedReward' or US_type == 'Airpuff'").index
+            )
             groups = [
                 (x_cs, df_trials, cs_col, "CS response"),
-                (x_rew, df_trials[rewarded], rew_col, "Rew response"),
-                (x_nrew, df_trials[~rewarded], rew_col, "No-rew response"),
+                (x_rew, df_trials[us_response], rew_col, "US response"),
+                (x_nrew, df_trials[~us_response], rew_col, "No-US response"),
             ]
             plotted = [
                 (

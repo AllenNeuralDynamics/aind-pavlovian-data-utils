@@ -390,6 +390,7 @@ def create_df_events(nwb_filename, adjust_time=True, verbose=True):
         df = df.rename(columns={'timestamp': 'timestamps', 'events': 'event'})
         df["timestamps_raw"] = df["timestamps"]
         df["timestamps"] = df["timestamps"] / MS_TO_S
+        df = _tmp_fix_cs4_reward_to_airpuff(df)
         df["canonical"] = df["event"].map(canonical_event_name)
 
     # Determine time 0 as first go Cue
@@ -405,6 +406,30 @@ def create_df_events(nwb_filename, adjust_time=True, verbose=True):
         )
 
     df["ses_idx"] = nwb_utils_dft.get_nwb_ses_idx(nwb)
+    return df
+
+
+def _tmp_fix_cs4_reward_to_airpuff(df: pd.DataFrame) -> pd.DataFrame:
+    """TEMPORARY: remap reward raw events -> 'airpuff' only for CS4 trials.
+
+    Called before canonical_event_name is applied so the canonical label is
+    correct from the start. Groups events by the 'trial' column; for any
+    trial that contains a CS4 event, remaps all reward events in that trial
+    to 'airpuff'.
+    Remove this function once the NWB files are reprocessed with correct labels.
+    """
+    canonical = df["event"].map(canonical_event_name)
+    if not (canonical == "CS4").any():
+        return df
+
+    df = df.copy()
+    canonical = df["event"].map(canonical_event_name)
+
+    cs4_trials = set(df.loc[canonical == "CS4", "trial"].unique())
+    in_cs4_trial = df["trial"].isin(cs4_trials)
+    is_reward = canonical == "Reward"
+    df.loc[in_cs4_trial & is_reward, "event"] = "airpuff"
+
     return df
 
 
