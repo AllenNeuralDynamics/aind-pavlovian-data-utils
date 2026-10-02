@@ -66,6 +66,8 @@ ANTILICK_SUMMARY_STAT = "mean"  # 'mean' -> mean +/- SD, 'median' -> median +/- 
 REW_WINDOW = (2.0, 4.0)  # seconds after CS onset for reward/US response
 
 
+
+
 def load_pavlovian_dfs(
     nwb_or_path,
     preprocessing=DEFAULT_PREPROCESSING,
@@ -198,12 +200,13 @@ def compute_pav_cs_psth(
     t_after=15.0,
     baseline=5.0,
     output_sampling_rate=OUTPUT_SR,
+    scale=1.0,
 ):
     """Event-triggered response for one channel/ROI, baseline-subtracted.
 
-    Wraps ``alignment.event_triggered_response`` and returns
-    ``(time, mean, sem, n)`` in percent dF/F. Empty inputs yield zero-length
-    ``mean``/``sem`` and ``n == 0``.
+    Wraps ``alignment.event_triggered_response`` and returns ``(time, mean, sem, n)``
+    in units of ``scale`` * dF/F (``100`` -> percent, ``1`` -> raw). Empty inputs
+    yield zero-length ``mean``/``sem`` and ``n == 0``.
     """
     sub = df_fip[(df_fip["channel"] == channel) & (df_fip["roi"] == roi)]
     if len(sub) == 0 or len(event_times) == 0:
@@ -231,7 +234,7 @@ def compute_pav_cs_psth(
     # tidy -> matrix [time, event]
     wide = etr.pivot_table(index="time", columns="event_number", values="data")
     t = wide.index.to_numpy(float)
-    mat = wide.to_numpy(float) * 100.0  # percent dF/F
+    mat = wide.to_numpy(float) * scale
     base = t < (t[0] + baseline)
     if base.any():
         mat = mat - np.nanmean(mat[base, :], axis=0, keepdims=True)
@@ -457,6 +460,7 @@ def process_nwb(
 def enrich_df_trials(
     nwb,
     channels=None,
+    data_col='data',
     preprocessing=DEFAULT_PREPROCESSING,
     cs_window=ANTILICK_WINDOW,
     rew_window=REW_WINDOW,
@@ -477,6 +481,11 @@ def enrich_df_trials(
                                         baseline-subtracted (one column per fiber)
       - ``rew_response_<event>``      : mean dF/F in ``rew_window`` after CS onset,
                                         baseline-subtracted (one column per fiber)
+
+    Responses are in the units of ``df_fip[data_col]`` (raw dF/F, or z-score if the
+    frame was z-scored upstream). Both metrics are linear in the signal, so a
+    different unit is just a rescale of the output column -- e.g. multiply by 100
+    for percent dF/F -- rather than something this function needs to know about.
 
     ``<event>`` is the fiber's ``patch_cord`` label (e.g. ``G_0``, ``R_1``).
 
@@ -531,7 +540,10 @@ def enrich_df_trials(
     fip_cache = {}
     for ev in events:
         sub = fip_df[fip_df["event"] == ev].sort_values("timestamps")
-        fip_cache[ev] = (sub["timestamps"].to_numpy(float), sub["data"].to_numpy(float) * 100.0)
+        fip_cache[ev] = (
+            sub["timestamps"].to_numpy(float),
+            sub["data"].to_numpy(float),
+        )
 
     # Group by CS_type so _anticipatory_lick_counts runs once per CS (vectorized)
     for cs_type, group in df_trials[df_trials["CS_type"].notna()].groupby("CS_type"):

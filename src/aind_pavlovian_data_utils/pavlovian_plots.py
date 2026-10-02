@@ -45,6 +45,11 @@ from .pavlovian_analysis import (  # noqa: E402
     detect_paradigm,
     classify_trials,
 )
+# Multiplier applied to dF/F before summarizing. 100.0 -> percent dF/F (the summary
+# page); 1.0 -> raw dF/F fraction (psth_CS_fip). Use 1.0 when df_fip['data'] is
+# already z-scored, since "z * 100" is meaningless.
+DFF_SCALE = 100.0
+
 
 CHANNEL_COLOR = {"Iso": "blue", "Green": "green", "Red": "magenta"}
 
@@ -77,9 +82,12 @@ def _roi_label(labels, roi, chans):
     return "ROI%d - %s" % (roi, ", ".join(dict.fromkeys(targets)))
 
 
-def plot_session_overview(df_events, df_fip, paradigm, meta, channels=None, fig=None):
+def plot_session_overview(
+    df_events, df_fip, paradigm, meta, channels=None, fig=None
+):
     """Whole-session traces for every channel/ROI with CS/US/lick markers.
 
+    Traces are stacked, plotting as a percentage of dFF
     Draws into ``fig`` (a Figure or SubFigure) when given, else creates one.
     """
     pairs = _channels_present(df_fip, channels)
@@ -91,12 +99,17 @@ def plot_session_overview(df_events, df_fip, paradigm, meta, channels=None, fig=
         fig = plt.figure(figsize=(20, 3 + 1.2 * max(len(rois), 1)))
     ax = fig.subplots()
     for i, roi in enumerate(rois):
-        off = -i * 100
+        off = -i * DFF_SCALE
         for c in chans:
             sub = df_fip[(df_fip["channel"] == c) & (df_fip["roi"] == roi)]
             sub = sub.sort_values("timestamps")
             if len(sub):
-                ax.plot(sub["timestamps"], sub["data"] * 100 + off, color=CHANNEL_COLOR[c], lw=0.6)
+                ax.plot(
+                    sub["timestamps"],
+                    sub["data"] * DFF_SCALE + off,
+                    color=CHANNEL_COLOR[c],
+                    lw=0.6,
+                )
         ax.axhline(off, ls="--", color="k", lw=0.5)
         ax.text(
             df_fip["timestamps"].max(),
@@ -123,14 +136,13 @@ def plot_session_overview(df_events, df_fip, paradigm, meta, channels=None, fig=
     if len(licks):
         ax.plot(
             licks,
-            np.full(len(licks), 100),
+            np.full(len(licks), DFF_SCALE),
             marker=3,
             ms=6,
             ls="none",
             color=(0, 0, 0, 0.5),
             label="Lick",
         )
-
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("dF/F (%)  (ROIs offset)")
     ax.set_title(
@@ -396,7 +408,8 @@ def plot_cs_psth_grid(
 ):
     """PSTH grid for one CS: rows = ROI, cols = channel, pos vs neg overlaid.
 
-    Draws into ``fig`` (a Figure or SubFigure) when given, else creates one.
+    ``scale`` sets the dF/F units (100 -> percent, 1 -> raw). Draws into ``fig``
+    (a Figure or SubFigure) when given, else creates one.
     """
     pairs = _channels_present(df_fip, channels)
     rois = sorted({r for _, r in pairs})
@@ -433,7 +446,8 @@ def plot_cs_psth_grid(
                 (neg_t, "k", "gray", neg_lab),
             ):
                 t, mean, sem, n = compute_pav_cs_psth(
-                    df_fip, c, roi, times, t_before, t_after, baseline, output_sampling_rate
+                    df_fip, c, roi, times, t_before, t_after, baseline,
+                    output_sampling_rate, DFF_SCALE,
                 )
                 if n > 0:
                     ax.plot(t, mean, color=main, label="%s (n=%d)" % (lab, n))
@@ -470,8 +484,8 @@ def plot_cs_psth_compare(
     """All CS side-by-side in one row per channel/ROI, shared y-axis per row.
 
     Same data/colors as :func:`plot_cs_psth_grid` (US-delivered solid, omission
-    dashed), but columns are CS so they can be compared directly. Draws into
-    ``fig`` (a Figure or SubFigure) when given, else creates one.
+    dashed), but columns are CS so they can be compared directly. . Draws into ``fig`` (a Figure or
+    SubFigure) when given, else creates one.
     """
     cs_list = paradigm["cs_list"]
     pairs = _channels_present(df_fip, channels)
@@ -500,7 +514,8 @@ def plot_cs_psth_compare(
                 (onsets[~pos_mask], "--", neg_lab),
             ):
                 t, mean, sem, n = compute_pav_cs_psth(
-                    df_fip, chan, roi, times, t_before, t_after, baseline, output_sampling_rate
+                    df_fip, chan, roi, times, t_before, t_after, baseline,
+                    output_sampling_rate
                 )
                 if n > 0:
                     ax.plot(t, mean, color=cs_color, ls=ls, label="%s (n=%d)" % (lab, n))
@@ -514,7 +529,7 @@ def plot_cs_psth_compare(
                 ax.set_title(cs, fontsize=9)
             ax.set_xlabel("Time - CS (s)")
             if ci == 0:
-                ax.set_ylabel("%s %s\ndF/F (%%)" % (_roi_label(labels, roi, chans), chan))
+                ax.set_ylabel("%s %s\ndF/F" % (_roi_label(labels, roi, chans), chan))
             ax.legend(fontsize=7, frameon=False)
     return fig
 
@@ -702,7 +717,7 @@ def plot_reaction_time(df_events, fig=None):
 def _resolve_want(plot_types):
     """Resolve the requested plot set into a concrete subset of names."""
     if plot_types is None or "all" in plot_types or "all_sess" in plot_types:
-        return {"session", "psth", "lick", "antilick", "rt", "psth_compare_CS"}
+        return {"session", "psth", "lick", "antilick", "rt"}
     return set(plot_types)
 
 
@@ -752,14 +767,6 @@ def _summary_sections(
         )
     if "rt" in want and len(rews) and len(licks):
         sections.append((4.0, lambda sf: plot_reaction_time(df_events, fig=sf)))
-    if "psth_compare_CS" in want and n_roi and paradigm["cs_list"]:
-        n_pairs = len(_channels_present(df_fip, channels))
-        sections.append(
-            (
-                3.0 * max(n_pairs, 1) + 1.0,
-                lambda sf: plot_cs_psth_compare(df_fip, paradigm, cls, meta, channels, fig=sf),
-            )
-        )
     return sections
 
 
@@ -1039,7 +1046,7 @@ def psth_CS_fip(
             ax_resp.set_xlim(*xlim)
             ax_resp.set_xticks([x0 + j for x0, _, _ in plotted for j in range(n_cs)])
             ax_resp.set_xticklabels(list(cs_list) * len(plotted), fontsize=8)
-            ax_resp.set_ylabel("%s\nΔF/F (%%)" % ev)
+            ax_resp.set_ylabel("%s\nΔF/F" % ev)
 
             # summary stat above each column; only the very first one is prefixed
             summary_stat_label = "med" if summary_stat == "median" else "avg"
