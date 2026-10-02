@@ -196,6 +196,7 @@ def compute_pav_cs_psth(
     channel,
     roi,
     event_times,
+    data_col="data",
     t_before=5.0,
     t_after=15.0,
     baseline=5.0,
@@ -212,13 +213,13 @@ def compute_pav_cs_psth(
     if len(sub) == 0 or len(event_times) == 0:
         return np.array([]), np.array([]), np.array([]), 0
 
-    data = sub[["timestamps", "data"]].sort_values("timestamps").reset_index(drop=True)
+    data = sub[["timestamps", data_col]].sort_values("timestamps").reset_index(drop=True)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         etr = event_triggered_response(
             data=data,
             t="timestamps",
-            y="data",
+            y=data_col,
             event_times=list(event_times),
             t_start=-abs(t_before),
             t_end=abs(t_after),
@@ -232,7 +233,7 @@ def compute_pav_cs_psth(
         return np.array([]), np.array([]), np.array([]), 0
 
     # tidy -> matrix [time, event]
-    wide = etr.pivot_table(index="time", columns="event_number", values="data")
+    wide = etr.pivot_table(index="time", columns="event_number", values=data_col)
     t = wide.index.to_numpy(float)
     mat = wide.to_numpy(float) * scale
     base = t < (t[0] + baseline)
@@ -528,8 +529,8 @@ def enrich_df_trials(
 
     df_trials["antilick"] = np.nan
     for ev in events:
-        df_trials["cs_response_%s" % ev] = np.nan
-        df_trials["rew_response_%s" % ev] = np.nan
+        df_trials["cs_%s_%s" % (data_col, ev)] = np.nan
+        df_trials["rew_%s_%s" % (data_col, ev)] = np.nan
 
     licks = df_events.loc[df_events["canonical"] == "Lick", "timestamps"].to_numpy(float)
     b0, b1 = baseline_window
@@ -542,7 +543,7 @@ def enrich_df_trials(
         sub = fip_df[fip_df["event"] == ev].sort_values("timestamps")
         fip_cache[ev] = (
             sub["timestamps"].to_numpy(float),
-            sub["data"].to_numpy(float),
+            sub[data_col].to_numpy(float),
         )
 
     # Group by CS_type so _anticipatory_lick_counts runs once per CS (vectorized)
@@ -565,7 +566,8 @@ def enrich_df_trials(
                 rew_mask = (ts >= onset + r0) & (ts < onset + r1)
                 if rew_mask.any():
                     rew_resps[i] = np.nanmean(vals[rew_mask]) - base
-            df_trials.loc[idxs, "cs_response_%s" % ev] = cs_resps
-            df_trials.loc[idxs, "rew_response_%s" % ev] = rew_resps
+            df_trials.loc[idxs, "cs_%s_%s" % (data_col, ev)] = cs_resps
+            df_trials.loc[idxs, "rew_%s_%s" % (data_col, ev)] = rew_resps
+
 
     return df_trials

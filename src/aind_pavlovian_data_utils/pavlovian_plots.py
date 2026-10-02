@@ -446,8 +446,8 @@ def plot_cs_psth_grid(
                 (neg_t, "k", "gray", neg_lab),
             ):
                 t, mean, sem, n = compute_pav_cs_psth(
-                    df_fip, c, roi, times, t_before, t_after, baseline,
-                    output_sampling_rate, DFF_SCALE,
+                    df_fip, c, roi, times, data_col="data", t_before=t_before, t_after=t_after, baseline=baseline,
+                    output_sampling_rate=output_sampling_rate, scale=DFF_SCALE,
                 )
                 if n > 0:
                     ax.plot(t, mean, color=main, label="%s (n=%d)" % (lab, n))
@@ -474,6 +474,7 @@ def plot_cs_psth_compare(
     paradigm,
     cls,
     meta,
+    data_col="data",
     channels=None,
     t_before=CMP_T_BEFORE,
     t_after=CMP_T_AFTER,
@@ -514,7 +515,7 @@ def plot_cs_psth_compare(
                 (onsets[~pos_mask], "--", neg_lab),
             ):
                 t, mean, sem, n = compute_pav_cs_psth(
-                    df_fip, chan, roi, times, t_before, t_after, baseline,
+                    df_fip, chan, roi, times, data_col, t_before, t_after, baseline,
                     output_sampling_rate
                 )
                 if n > 0:
@@ -944,6 +945,7 @@ def _label_summary_stat_above_beeswarm(ax, summary_stat_values, x0, y, summary_s
 
 def psth_CS_fip(
     nwb,
+    data_col="data",
     channels=None,
     meta=None,
     antilick_window=ANTILICK_WINDOW,
@@ -961,7 +963,7 @@ def psth_CS_fip(
       - Left panel  : anticipatory lick beeswarm per CS via
                       :func:`plot_anticipatory_lick_summary`
       - Right panel : CS response and reward response beeswarms (rewarded trials only),
-                      using ``cs_response_<event>`` / ``rew_response_<event>`` columns
+                      using ``cs_<data_col>_<event>`` / ``rew_<data_col>_<event>`` columns
                       added by :func:`pavlovian_analysis.enrich_df_trials`
 
     Returns ``None`` if df_fip is empty.
@@ -998,7 +1000,7 @@ def psth_CS_fip(
         lick_sf, resp_sf = bot_sf.subfigures(1, 2, width_ratios=[1.0, 3.0])
 
         # --- Top: PSTH comparison for this fiber only ---
-        plot_cs_psth_compare(df_fip[df_fip["event"] == ev], paradigm, cls, meta, fig=psth_sf)
+        plot_cs_psth_compare(df_fip[df_fip["event"] == ev], paradigm, cls, meta, data_col=data_col, fig=psth_sf)
         psth_sf.suptitle(
             "%s %s: %s" % (meta["subject_id"], meta["date"], ev), fontsize=13
         )
@@ -1012,8 +1014,8 @@ def psth_CS_fip(
 
         # --- Right: CS response (all trials) + rewarded / unrewarded US response ---
         ax_resp = resp_sf.subplots()
-        cs_col = "cs_response_%s" % ev
-        rew_col = "rew_response_%s" % ev
+        cs_col = "cs_%s_%s" % (data_col, ev)
+        rew_col = "rew_%s_%s" % (data_col, ev)
         GAP = 1
         x_cs = 0
         x_rew = n_cs + GAP
