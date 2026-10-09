@@ -40,6 +40,8 @@ from . import nwb_utils
 from aind_dynamic_foraging_data_utils.alignment import event_triggered_response
 from rachel_analysis_utils import data_curation_helpers
 from rachel_analysis_utils.nwb_utils import dummy_nwb
+from aind_dynamic_foraging_data_utils import enrich_dfs
+
 
 # Data-shaping constants live in nwb_utils; re-used here for viz.
 canonical_event_name = nwb_utils.canonical_event_name  # re-export for convenience
@@ -49,10 +51,12 @@ DEFAULT_PREPROCESSING = nwb_utils.DEFAULT_FIP_PREPROCESSING
 CHANNEL_ORDER = ["Iso", "Green", "Red"]
 
 # CS -> (US kind, plot color, US-delivered label, omission label)
+# CS1-3 colors are sampled from seaborn's "mako" to match the RPE-binned plots:
+# ends of sns.color_palette("mako", 6) (cmap at 1/7 and 6/7) and the cmap center (0.5).
 CS_INFO = {
-    "CS1": ("reward", (1.0, 0.0, 0.0), "R+", "R-"),
-    "CS2": ("reward", (0.0, 0.7, 0.0), "R+", "R-"),
-    "CS3": ("reward", (1.0, 0.0, 1.0), "R+", "R-"),
+    "CS1": ("reward", (0.18195582, 0.11955283, 0.23136943), "R+", "R-"),
+    "CS2": ("reward", (0.20692679, 0.48201774, 0.63812656), "R+", "R-"),
+    "CS3": ("reward", (0.54578602, 0.85449130, 0.69848331), "R+", "R-"),
     "CS4": ("airpuff", (0.3, 0.3, 0.3), "P+", "P-"),
 }
 
@@ -571,3 +575,106 @@ def enrich_df_trials(
 
 
     return df_trials
+
+def enrich_pav_nwbs(nwb_list, data_col="data"):
+    """
+    enrich_pav_nwbs does 2 things: 
+        z-score df_fip[data_col] for each nwb separately, per session and channel.
+        enrich df_trials[data_col] for each nwb separately, per session and channel to get averaged responses
+        during US and CS times (subtracting baseline, 2 seconds before US)
+    zscore_fip groups by ['ses_idx', 'event'] internally and adds a
+    '<data_col>_z' column, leaving the original column untouched.
+    Sessions with an empty df_fip are skipped.
+    Returns the same flat list (df_fip replaced in place).
+    """
+    for nwb in nwb_list:
+        if len(nwb.df_fip) == 0:
+            continue
+        nwb.df_fip = enrich_dfs.zscore_fip(nwb.df_fip, data_col=data_col)
+        nwb.df_trials = enrich_df_trials(nwb, data_col="data")
+        nwb.df_trials = enrich_df_trials(nwb, data_col="data_z")
+       
+
+    return nwb_list
+
+
+def concat_df_trials(nwbs):
+    """
+    Concatenate df_trials across sessions into one long table.
+
+    df_trials already carries 'ses_idx' ("<subject_id>_<date>"); subject_id and
+    date are split out of it. 'stage' comes from detect_paradigm(df_events).
+    """
+    frames = []
+    for nwb in nwbs:
+        df = getattr(nwb, "df_trials", None)
+        if df is None or len(df) == 0:
+            continue
+        df = df.copy()
+
+        df_events = getattr(nwb, "df_events", None)
+        df["stage"] = (
+            detect_paradigm(df_events)["stage"].split(' ')[0]
+            if df_events is not None and len(df_events) else None
+        )
+        frames.append(df)
+
+    if not frames:
+        return pd.DataFrame()
+
+    out = pd.concat(frames, ignore_index=True)
+    ses = out["ses_idx"].astype(str).str.split("_", n=1, expand=True)
+    out["subject_id"] = ses[0]
+    out["session_date"] = ses[1]
+    return out
+
+
+def session_means_by_cs(df_trials_all, value_col, query=None,
+                        cs_types=['CS1', 'CS2', 'CS3'], session_col="ses_idx"):
+    """
+    Mean of `value_col` per session per CS type.
+
+    `query` is an optional extra df_trials filter, e.g. "rewarded == True"
+    (US delivered) or "rewarded == False" (omission).
+
+    Returns a tidy DataFrame with columns
+    [session_col, subject_id, session_date, stage, CS_type, value, n_trials],
+    one row per session x CS. Sessions missing a CS simply have no row.
+    """
+    df = df_trials_all
+    if query:
+        df = df.query(query)
+
+    id_cols = [c for c in ("subject_id", "session_date", "stage") if c in df.columns]
+    empty = pd.DataFrame(columns=[session_col, *id_cols, "CS_type", "value", "n_trials"])
+    if value_col not in df.columns:
+        return empty
+
+    df = df[df["CS_type"].isin(cs_types)].copy()
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+    df = df.dropna(subset=[value_col])
+    if df.empty:
+        return empty
+
+    out = (
+        df.groupby([session_col, *id_cols, "CS_type"], as_index=False, observed=True)
+          .agg(value=(value_col, "mean"), n_trials=(value_col, "size"))
+    )
+    out["CS_type"] = pd.Categorical(out["CS_type"], categories=cs_types, ordered=True)
+    sort_cols = [c for c in ("session_date", session_col) if c in out.columns]
+    return out.sort_values([*sort_cols, "CS_type"]).reset_index(drop=True)
+
+
+def _get_channels_from_nwb_list(nwb_list):
+    """Union of fiber ``event`` names across NWBs, plus each NWB's own set.
+
+    Returns ``(channels, chans_per_nwb)``: sorted channel names present in any session,
+    and a list (parallel to ``nwb_list``) of the set of channels in each session.
+    """
+    chans_per_nwb = [
+        set(nwb.df_fip["event"].unique()) if len(nwb.df_fip) > 0 else set()
+        for nwb in nwb_list
+    ]
+    channels = sorted(set().union(*chans_per_nwb)) if chans_per_nwb else []
+    return channels, chans_per_nwb
+

@@ -19,15 +19,20 @@ Public functions:
     plot_nwb_summary
 """
 
+import re
 import warnings
+from pathlib import Path
 
 import matplotlib
 
 matplotlib.use("Agg")  # capsule/headless safe; callers may override before import
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 import numpy as np  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import pandas as pd  # noqa: E402
+
+from aind_dynamic_foraging_basic_analysis.plot import plot_fip  # noqa: E402
 
 from .nwb_utils import parse_session_name  # noqa: E402
 from .pavlovian_analysis import (  # noqa: E402
@@ -40,6 +45,9 @@ from .pavlovian_analysis import (  # noqa: E402
     REW_WINDOW,
     DEFAULT_PREPROCESSING,
     _channels_present,
+    _get_channels_from_nwb_list,
+    concat_df_trials,
+    session_means_by_cs,
     _anticipatory_lick_counts,
     compute_pav_cs_psth,
     detect_paradigm,
@@ -1063,5 +1071,333 @@ def psth_CS_fip(
                              ha="center", va="bottom", fontsize=8)
         ax_resp.spines["top"].set_visible(False)
         ax_resp.spines["right"].set_visible(False)
+
+    return fig
+
+
+def _cs_sort_key(cs):
+    """Sort 'CS1' < 'CS2' < ... numerically, unknown labels last."""
+    m = re.search(r"(\d+)$", str(cs))
+    return (0, int(m.group(1))) if m else (1, str(cs))
+
+
+def plot_cs_psth_by_subject(
+    nwb_by_subject,
+    data_col="data_z",
+    tw=(-2, 5),
+    error_type="sem",
+    plot_loc=None,
+    min_sessions=0,
+):
+    """
+    One figure per subject: rows = fiber channels (recording regions),
+    columns = trial subsets (all / rewarded / unrewarded), CS types overlaid.
+    Channels recorded in fewer than ``min_sessions`` sessions are skipped, and
+    subjects left with no channels get no figure.
+
+    The region + session count is printed above every row of panels; the
+    y-label on the first column is the signal name.
+    """
+    cs_types = ["CS1", "CS2", "CS3"]
+    cs_labels = {
+        "CS1": "CS1 (10% rew)",
+        "CS2": "CS2 (50% rew)",
+        "CS3": "CS3 (90% rew)",
+    }
+    col_specs = [
+        ("all", ""),
+        ("rewarded", " and rewarded"),
+        ("unrewarded", " and not rewarded"),
+    ]
+    y_labels = {"data_z": "z-scored dF/F", "data": "dF/F"}
+    y_label = y_labels.get(data_col, data_col)
+
+    cs_colors = {cs: CS_INFO[cs][1] for cs in cs_types if cs in CS_INFO}
+    figs = {}
+
+    for subject, subject_nwbs in nwb_by_subject.items():
+        subject_channels, chans_per_nwb = _get_channels_from_nwb_list(subject_nwbs)
+        subject_channels = [
+            ch for ch in subject_channels
+            if sum(ch in chans for chans in chans_per_nwb) >= min_sessions
+        ]
+        if not subject_channels:
+            continue
+
+        fig, axes = plt.subplots(
+            len(subject_channels), len(col_specs),
+            figsize=(5 * len(col_specs), 4 * len(subject_channels)),
+            sharey="row", squeeze=False,
+        )
+
+        for r, channel in enumerate(subject_channels):
+            # only pass sessions that actually contain this channel
+            nwbs_with_chan = [
+                nwb for nwb, chans in zip(subject_nwbs, chans_per_nwb)
+                if channel in chans
+            ]
+            row_title = f"{channel} (N={len(nwbs_with_chan)} sessions)"
+
+            for c, (col_label, extra) in enumerate(col_specs):
+                ax = axes[r, c]
+                if not nwbs_with_chan:
+                    ax.set_axis_off()
+                    continue
+
+                alignments = [
+                    {
+                        cs: nwb.df_trials.query("CS_type == @cs" + extra)
+                             .CS_start_time_in_session.values
+                        for cs in cs_types
+                    }
+                    for nwb in nwbs_with_chan
+                ]
+
+                plot_fip.plot_fip_psth_compare_alignments(
+                    nwbs_with_chan,
+                    alignments,
+                    channel=channel,
+                    tw=list(tw),
+                    extra_colors=cs_colors,
+                    data_column=data_col,
+                    error_type=error_type,
+                    ax=ax,
+                )
+                # drop the per-panel legend; one shared legend is added below
+                leg = ax.get_legend()
+                if leg is not None:
+                    leg.remove()
+
+                # trial-subset label only on the top row; region above every row
+                ax.set_title(
+                    f"{col_label}\n{row_title}" if r == 0 else row_title,
+                    fontsize=10,
+                )
+
+                # signal name as the y-label, first column only
+                ax.set_ylabel(y_label if c == 0 else "")
+
+        # single legend on the upper-right panel
+        handles = [
+            Line2D([], [], color=cs_colors.get(cs, "k"), lw=2,
+                   label=cs_labels.get(cs, cs))
+            for cs in cs_types
+        ]
+        axes[0, -1].legend(handles=handles, loc="upper right", fontsize=8, frameon=False)
+
+        fig.suptitle(f"{subject} — {y_label}")
+        fig.tight_layout()
+
+        if plot_loc is not None:
+            Path(plot_loc).mkdir(parents=True, exist_ok=True)
+            fig.savefig(Path(plot_loc) / f"{subject}_cs_psth_{data_col}.png")
+            plt.close(fig)
+
+        figs[subject] = fig
+
+    return figs
+
+
+def plot_cs_metric(
+    df_means,
+    title="",
+    ylabel=None,
+    cs_types=None,
+    ax=None,
+    zero_line=True,
+    show_sessions=True,
+    show_stats=True,
+    jitter=0.12,
+    seed=0,
+    session_col="ses_idx",
+):
+    """
+    Plot output of session_means_by_cs: mean +/- SEM across sessions,
+    one dot per session, paired t-test (first CS vs each other CS).
+    """
+    if cs_types is None:
+        cs_types = sorted(df_means["CS_type"].astype(str).unique(), key=_cs_sort_key)
+    cs_types = list(cs_types)
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(3.4, 3.6))
+    rng = np.random.default_rng(seed)
+    cs_colors = {cs: CS_INFO[cs][1] for cs in cs_types if cs in CS_INFO}
+    x = np.arange(len(cs_types))
+
+    # ---- dots + mean/SEM ----
+    means, sems = [], []
+    for i, cs in enumerate(cs_types):
+        vals = df_means.loc[df_means["CS_type"] == cs, "value"].to_numpy(float)
+        n = len(vals)
+        means.append(vals.mean() if n else np.nan)
+        sems.append(vals.std(ddof=1) / np.sqrt(n) if n > 1 else 0.0)
+        if show_sessions and n:
+            ax.scatter(x[i] + rng.uniform(-jitter, jitter, n), vals, s=22,
+                       color=cs_colors.get(cs, "gray"), alpha=0.7,
+                       edgecolors="none", zorder=2)
+    if len(x):
+        ax.errorbar(x, means, yerr=sems, fmt="o", color="black", markersize=9,
+                    capsize=4, elinewidth=1.8, zorder=3)
+
+    # ---- cosmetics ----
+    if zero_line:
+        ax.axhline(0, color="0.8", ls="--", lw=0.8, zorder=0)
+    ax.set_xticks(x)
+    ax.set_xticklabels(cs_types)
+    ax.set_xlim(-0.5, max(len(cs_types), 1) - 0.5)
+    ax.set_ylabel(ylabel or "")
+    n_ses = df_means[session_col].nunique() if len(df_means) else 0
+    ax.set_title(f"{title} (N={n_ses})", fontsize=11, fontweight="bold")
+    ax.spines[["top", "right"]].set_visible(False)
+    return ax
+STAGE_LINESTYLES = ["-", "--", ":", "-."]   # stage 2 solid, stage 3 dashed, ...
+
+
+def plot_cs_metric_by_stage(
+    df_means,
+    title="",
+    ylabel=None,
+    cs_types=None,
+    stages=None,
+    ax=None,
+    zero_line=True,
+    session_col="ses_idx",
+    gap=1.0,
+):
+    """
+    Stages side by side in one panel. Per stage: thin line per session,
+    thick mean +/- SEM line; markers colored by CS, linestyle by stage.
+    """
+    if ax is None:
+        _, ax = plt.subplots(figsize=(5, 3.6))
+    if cs_types is None:
+        cs_types = sorted(df_means["CS_type"].astype(str).unique(), key=_cs_sort_key)
+    cs_types = list(cs_types)
+    if stages is None:
+        stages = sorted(df_means["stage"].dropna().astype(str).unique())
+    cs_colors = {cs: CS_INFO[cs][1] for cs in cs_types if cs in CS_INFO}
+
+    n_cs = len(cs_types)
+    xticks, xlabels = [], []
+    for s_i, stage in enumerate(stages):
+        ls = STAGE_LINESTYLES[s_i % len(STAGE_LINESTYLES)]
+        x0 = s_i * (n_cs + gap)
+        d = df_means[df_means["stage"].astype(str) == stage]
+        wide = d.pivot_table(index=session_col, columns="CS_type",
+                             values="value", observed=True)
+        wide.columns = wide.columns.astype(str)
+        wide = wide.reindex(columns=cs_types)
+        xs = x0 + np.arange(n_cs)
+
+        # per-session thin lines
+
+        for _, row in wide.iterrows():
+            ax.plot(xs, row.to_numpy(float), ls=ls, color="0.6",
+                    lw=0.8, alpha=0.6, zorder=1)
+            ax.scatter(xs, row.to_numpy(float), s=14, alpha=0.6,
+                        c=[cs_colors.get(cs, "gray") for cs in cs_types],
+                        edgecolors="none", zorder=2)
+
+        # mean +/- SEM
+        n = wide.notna().sum().to_numpy()
+        m = wide.mean().to_numpy(float)
+        sem = np.where(n > 1, wide.std(ddof=1).to_numpy(float) / np.sqrt(np.maximum(n, 1)), 0)
+        ax.plot(xs, m, ls=ls, color="black", lw=2, zorder=3)
+        ax.errorbar(xs, m, yerr=sem, fmt="none", ecolor="black",
+                    capsize=3, elinewidth=1.5, zorder=3)
+        ax.scatter(xs, m, s=60, c=[cs_colors.get(cs, "gray") for cs in cs_types],
+                   edgecolors="black", linewidths=1, zorder=4)
+
+        # stage label + divider
+        n_ses = d[session_col].nunique()
+        ax.text(x0 + (n_cs - 1) / 2, 1.0, f"{stage} (N={n_ses})",
+                transform=ax.get_xaxis_transform(), ha="center", va="bottom",
+                fontsize=8, color="0.4")
+        if s_i > 0:
+            ax.axvline(x0 - (gap + 1) / 2, color="0.85", ls=":", lw=1, zorder=0)
+
+        xticks += list(xs)
+        xlabels += cs_types
+
+    if zero_line:
+        ax.axhline(0, color="0.8", ls="--", lw=0.8, zorder=0)
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(xlabels, fontsize=8)
+    ax.set_ylabel(ylabel or "")
+    ax.set_title(title, fontsize=11, fontweight="bold", pad=14)
+    ax.spines[["top", "right"]].set_visible(False)
+    return ax
+
+
+def plot_cs_metric_rows(nwb_list, data_col="data_z", title=None, plot_loc=None, min_sessions=0):
+    """
+    Per channel, two rows:
+      row 1: all sessions pooled
+      row 2: split by stage (solid = 1st stage, dashed = 2nd, ...)
+    cols = antilick | CS response | US response | no-US response.
+    Channels recorded in fewer than ``min_sessions`` sessions are skipped; returns
+    None if none remain.
+    """
+    channels, chans_per_nwb = _get_channels_from_nwb_list(nwb_list)
+    channels = [
+        ch for ch in channels
+        if sum(ch in chans for chans in chans_per_nwb) >= min_sessions
+    ]
+    if not channels:
+        return None
+    df_trials_all = concat_df_trials(nwb_list)
+    y_label = {"data_z": "z-scored dF/F", "data": "dF/F"}.get(data_col, data_col)
+
+    cs_types = ['CS1', 'CS2', 'CS3']
+    stages = sorted(df_trials_all["stage"].dropna().astype(str).unique()) \
+        if "stage" in df_trials_all else []
+
+    lick = session_means_by_cs(df_trials_all, "antilick", cs_types=cs_types)  # once
+
+    n_rows = 2 * max(len(channels), 1)
+    fig, axes = plt.subplots(n_rows, 4, figsize=(16, 3.8 * n_rows), squeeze=False)
+
+    for r, ch in enumerate(channels):
+        cs_col, rew_col = f"cs_{data_col}_{ch}", f"rew_{data_col}_{ch}"
+        panels = [
+            (lick, "Anticipatory lick rate", "licks / 2 s", False),
+            (session_means_by_cs(df_trials_all, cs_col, cs_types=cs_types),
+             "CS response", y_label, True),
+            (session_means_by_cs(df_trials_all, rew_col, "rewarded == True", cs_types),
+             "US response", y_label, True),
+            (session_means_by_cs(df_trials_all, rew_col, "rewarded == False", cs_types),
+             "No-US response", y_label, True),
+        ]
+        row_pooled, row_stage = axes[2 * r], axes[2 * r + 1]
+        for ax_p, ax_s, (d, t, yl, zl) in zip(row_pooled, row_stage, panels):
+            plot_cs_metric(d, title=t, ylabel=yl, cs_types=cs_types,
+                           zero_line=zl, ax=ax_p)
+            if stages:
+                plot_cs_metric_by_stage(d, title=t, ylabel=yl, cs_types=cs_types,
+                                        stages=stages, zero_line=zl, ax=ax_s)
+            else:
+                ax_s.set_axis_off()
+
+        for ax, lbl in ((row_pooled[0], ch), (row_stage[0], f"{ch}\nby stage")):
+            ax.annotate(lbl, xy=(-0.45, 0.5), xycoords="axes fraction",
+                        rotation=90, ha="center", va="center",
+                        fontsize=11, fontweight="bold")
+
+    # shared stage linestyle legend
+    if stages:
+        handles = [Line2D([], [], color="black", lw=2,
+                          ls=STAGE_LINESTYLES[i % len(STAGE_LINESTYLES)], label=s)
+                   for i, s in enumerate(stages)]
+        fig.legend(handles=handles, loc="upper right", frameon=False, fontsize=9)
+
+    if title:
+        fig.suptitle(title)
+    fig.tight_layout()
+
+    if plot_loc is not None:
+        Path(plot_loc).mkdir(parents=True, exist_ok=True)
+        fig.savefig(Path(plot_loc) / f"{title or 'cs_metrics'}_{data_col}.png", dpi=150)
+        plt.close(fig)
 
     return fig
