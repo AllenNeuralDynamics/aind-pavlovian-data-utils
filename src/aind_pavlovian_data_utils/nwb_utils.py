@@ -320,7 +320,7 @@ def create_df_trials(nwb_filename, adjust_time=True, verbose=True):  # NOQA C901
 
     # Build dataframe
     df = nwb.trials.to_dataframe().reset_index()
-    df = df.drop(columns = "id")
+    df = df.drop(columns="id")
     df["ses_idx"] = nwb_utils_dft.get_nwb_ses_idx(nwb)
 
     # Adjust for gaps in trial start/stop, and use the last stop time
@@ -461,8 +461,9 @@ def create_df_fip(
         If no series match ``preprocessing`` (typically a typo in the name).
     """
     nwb_utils_dft.SESSION_ALIGNMENT = SESSION_ALIGNMENT
-    df_fip = nwb_utils_dft.create_df_fip(nwb_filename, tidy=True,
-                                         adjust_time=adjust_time, verbose=verbose)
+    df_fip = nwb_utils_dft.create_df_fip(
+        nwb_filename, tidy=True, adjust_time=adjust_time, verbose=verbose
+    )
 
     if df_fip is None or len(df_fip) == 0:
         raise ValueError("No fiber-photometry data returned by create_df_fip.")
