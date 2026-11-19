@@ -26,6 +26,7 @@ dependencies = [
     'aind-data-access-api',
     'codeocean',
     'aind-dynamic-foraging-data-utils>=0.1.52',
+    'aind_nwb_utils',
     'rachel-analysis-utils'
 ]
 
