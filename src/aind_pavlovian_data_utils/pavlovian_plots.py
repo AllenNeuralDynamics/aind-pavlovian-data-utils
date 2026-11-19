@@ -20,7 +20,6 @@ Public functions:
 """
 
 import re
-import warnings
 from pathlib import Path
 
 import matplotlib
@@ -53,6 +52,7 @@ from .pavlovian_analysis import (  # noqa: E402
     detect_paradigm,
     classify_trials,
 )
+
 # Multiplier applied to dF/F before summarizing. 100.0 -> percent dF/F (the summary
 # page); 1.0 -> raw dF/F fraction (psth_CS_fip). Use 1.0 when df_fip['data'] is
 # already z-scored, since "z * 100" is meaningless.
@@ -90,9 +90,7 @@ def _roi_label(labels, roi, chans):
     return "ROI%d - %s" % (roi, ", ".join(dict.fromkeys(targets)))
 
 
-def plot_session_overview(
-    df_events, df_fip, paradigm, meta, channels=None, fig=None
-):
+def plot_session_overview(df_events, df_fip, paradigm, meta, channels=None, fig=None):
     """Whole-session traces for every channel/ROI with CS/US/lick markers.
 
     Traces are stacked, plotting as a percentage of dFF
@@ -173,17 +171,27 @@ def _add_spans(df_events, shapes, fig, key, rgb, alpha, span_width):
     for tt in times:
         shapes.append(
             dict(
-                type="rect", xref="x", yref="paper",
-                x0=tt, x1=tt + span_width, y0=0, y1=1,
-                fillcolor=color, line_width=0, layer="below",
+                type="rect",
+                xref="x",
+                yref="paper",
+                x0=tt,
+                x1=tt + span_width,
+                y0=0,
+                y1=1,
+                fillcolor=color,
+                line_width=0,
+                layer="below",
             )
         )
     if len(times):
         fig.add_trace(
             go.Scatter(
-                x=[None], y=[None], mode="markers",
+                x=[None],
+                y=[None],
+                mode="markers",
                 marker=dict(size=12, color=color, symbol="square"),
-                name=key, showlegend=True,
+                name=key,
+                showlegend=True,
             )
         )
 
@@ -235,7 +243,9 @@ def plot_pavlovian_session_plotly(df_events, df_fip, paradigm, meta, channels=No
             ys += [LICK_CENTER - TICK_HALF, LICK_CENTER + TICK_HALF, None]
         fig.add_trace(
             go.Scattergl(
-                x=xs, y=ys, mode="lines",
+                x=xs,
+                y=ys,
+                mode="lines",
                 line=dict(color="black", width=1.5),
                 name="Lick",
             )
@@ -254,7 +264,9 @@ def plot_pavlovian_session_plotly(df_events, df_fip, paradigm, meta, channels=No
     fip_clipped_ids = []
 
     for channel, roi in pairs:
-        sub = df_fip[(df_fip["channel"] == channel) & (df_fip["roi"] == roi)].sort_values("timestamps")
+        sub = df_fip[(df_fip["channel"] == channel) & (df_fip["roi"] == roi)].sort_values(
+            "timestamps"
+        )
         vals = sub["data"].astype(float).to_numpy()
         if vals.size == 0 or np.all(np.isnan(vals)):
             continue
@@ -278,8 +290,11 @@ def plot_pavlovian_session_plotly(df_events, df_fip, paradigm, meta, channels=No
         fip_unclipped_ids.append(len(fig.data))
         fig.add_trace(
             go.Scattergl(
-                x=ts, y=d, customdata=custom,
-                mode="lines", hovertemplate=hover,
+                x=ts,
+                y=d,
+                customdata=custom,
+                mode="lines",
+                hovertemplate=hover,
                 line=dict(color=color, width=1),
                 name=label,
             )
@@ -288,10 +303,15 @@ def plot_pavlovian_session_plotly(df_events, df_fip, paradigm, meta, channels=No
         fip_clipped_ids.append(len(fig.data))
         fig.add_trace(
             go.Scattergl(
-                x=ts, y=d_clipped, customdata=custom,
-                mode="lines", hovertemplate=hover,
+                x=ts,
+                y=d_clipped,
+                customdata=custom,
+                mode="lines",
+                hovertemplate=hover,
                 line=dict(color=color, width=1),
-                name=label, visible=False, showlegend=False,
+                name=label,
+                visible=False,
+                showlegend=False,
             )
         )
 
@@ -313,19 +333,30 @@ def plot_pavlovian_session_plotly(df_events, df_fip, paradigm, meta, channels=No
         for idx in fip_clipped_ids:
             vis_clip[idx] = True
         fig.update_layout(
-            updatemenus=[dict(
-                type="buttons", direction="right",
-                x=1.0, y=1.0, xanchor="right", yanchor="top",
-                showactive=True,
-                buttons=[
-                    dict(label="FIP: full range", method="restyle", args=[{"visible": vis_full}]),
-                    dict(label="FIP: clip 1–99%", method="restyle", args=[{"visible": vis_clip}]),
-                ],
-            )]
+            updatemenus=[
+                dict(
+                    type="buttons",
+                    direction="right",
+                    x=1.0,
+                    y=1.0,
+                    xanchor="right",
+                    yanchor="top",
+                    showactive=True,
+                    buttons=[
+                        dict(
+                            label="FIP: full range", method="restyle", args=[{"visible": vis_full}]
+                        ),
+                        dict(
+                            label="FIP: clip 1–99%", method="restyle", args=[{"visible": vis_clip}]
+                        ),
+                    ],
+                )
+            ]
         )
 
     fig.update_yaxes(
-        tickvals=yticks, ticktext=ylabels,
+        tickvals=yticks,
+        ticktext=ylabels,
         fixedrange=True,
         range=[BEHAVIOR_BOTTOM - 0.05, y_main_top],
     )
@@ -338,15 +369,24 @@ def plot_pavlovian_session_plotly(df_events, df_fip, paradigm, meta, channels=No
             text="Session overview — %s %s [%s]"
             % (meta.get("subject_id", ""), meta.get("date", ""), paradigm["stage"]),
             font=dict(size=12),
-            x=0.0, xanchor="left", y=0.98, yanchor="top",
+            x=0.0,
+            xanchor="left",
+            y=0.98,
+            yanchor="top",
         ),
         height=max(400, 300 + 120 * max(len(pairs), 1)),
         width=1000,
         template="simple_white",
         showlegend=True,
         legend=dict(
-            orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
-            font=dict(size=9), entrywidthmode="pixels", entrywidth=125,
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+            font=dict(size=9),
+            entrywidthmode="pixels",
+            entrywidth=125,
         ),
         margin=dict(l=70, r=20, t=120, b=40),
     )
@@ -454,8 +494,16 @@ def plot_cs_psth_grid(
                 (neg_t, "k", "gray", neg_lab),
             ):
                 t, mean, sem, n = compute_pav_cs_psth(
-                    df_fip, c, roi, times, data_col="data", t_before=t_before, t_after=t_after, baseline=baseline,
-                    output_sampling_rate=output_sampling_rate, scale=DFF_SCALE,
+                    df_fip,
+                    c,
+                    roi,
+                    times,
+                    data_col="data",
+                    t_before=t_before,
+                    t_after=t_after,
+                    baseline=baseline,
+                    output_sampling_rate=output_sampling_rate,
+                    scale=DFF_SCALE,
                 )
                 if n > 0:
                     ax.plot(t, mean, color=main, label="%s (n=%d)" % (lab, n))
@@ -523,8 +571,15 @@ def plot_cs_psth_compare(
                 (onsets[~pos_mask], "--", neg_lab),
             ):
                 t, mean, sem, n = compute_pav_cs_psth(
-                    df_fip, chan, roi, times, data_col, t_before, t_after, baseline,
-                    output_sampling_rate
+                    df_fip,
+                    chan,
+                    roi,
+                    times,
+                    data_col,
+                    t_before,
+                    t_after,
+                    baseline,
+                    output_sampling_rate,
                 )
                 if n > 0:
                     ax.plot(t, mean, color=cs_color, ls=ls, label="%s (n=%d)" % (lab, n))
@@ -703,7 +758,7 @@ def plot_reaction_time(df_events, fig=None):
         return None
     rt = np.full(len(rew), np.nan)
     for i, r in enumerate(rew):
-        nxt = lick[np.searchsorted(lick, r, side="left"):]
+        nxt = lick[np.searchsorted(lick, r, side="left") :]
         if len(nxt):
             rt[i] = nxt[0] - r
     good = rt[~np.isnan(rt)]
@@ -720,7 +775,6 @@ def plot_reaction_time(df_events, fig=None):
     ax[1].set_xlabel("RT (s)")
     ax[2].set_xlabel("RT < 0.5 s")
     return fig
-
 
 
 def _resolve_want(plot_types):
@@ -896,8 +950,9 @@ def plot_nwb_summary(
     return fig, paths
 
 
-
-def _beeswarm_group(ax, x_pos, values, color, summary_stat, swarm_width, alpha=0.70, summary_color="black"):
+def _beeswarm_group(
+    ax, x_pos, values, color, summary_stat, swarm_width, alpha=0.70, summary_color="black"
+):
     """Draw one beeswarm column + mean/median summary marker at x_pos.
 
     Returns the summary stat value (mean or median), or None if there was no data.
@@ -907,8 +962,16 @@ def _beeswarm_group(ax, x_pos, values, color, summary_stat, swarm_width, alpha=0
     if not len(valid):
         return None
     dx = _beeswarm_offsets(valid, swarm_width)
-    ax.scatter(x_pos - 0.18 + dx, valid, s=20, facecolor=color, edgecolor="white",
-               linewidth=0.3, alpha=alpha, zorder=2)
+    ax.scatter(
+        x_pos - 0.18 + dx,
+        valid,
+        s=20,
+        facecolor=color,
+        edgecolor="white",
+        linewidth=0.3,
+        alpha=alpha,
+        zorder=2,
+    )
     if summary_stat == "median":
         summary_stat_value = float(np.median(valid))
         lo = float(np.percentile(valid, 25))
@@ -917,8 +980,14 @@ def _beeswarm_group(ax, x_pos, values, color, summary_stat, swarm_width, alpha=0
         summary_stat_value = float(np.mean(valid))
         sd = float(np.std(valid))
         lo, hi = summary_stat_value - sd, summary_stat_value + sd
-    ax.plot([x_pos + 0.22, x_pos + 0.22], [lo, hi], color=summary_color, lw=3.2,
-            solid_capstyle="round", zorder=3)
+    ax.plot(
+        [x_pos + 0.22, x_pos + 0.22],
+        [lo, hi],
+        color=summary_color,
+        lw=3.2,
+        solid_capstyle="round",
+        zorder=3,
+    )
     ax.plot(x_pos + 0.22, summary_stat_value, "o", color=summary_color, ms=7, zorder=4)
     return summary_stat_value
 
@@ -939,7 +1008,9 @@ def _plot_response_group(ax, df, col, cs_list, x0, summary_stat, swarm_width):
     return summary_stat_values
 
 
-def _label_summary_stat_above_beeswarm(ax, summary_stat_values, x0, y, summary_stat_label, first=False):
+def _label_summary_stat_above_beeswarm(
+    ax, summary_stat_values, x0, y, summary_stat_label, first=False
+):
     """Write each summary stat value above its column; prefix the very first one."""
     for j, summary_stat_value in enumerate(summary_stat_values):
         if summary_stat_value is not None:
@@ -1008,16 +1079,21 @@ def psth_CS_fip(
         lick_sf, resp_sf = bot_sf.subfigures(1, 2, width_ratios=[1.0, 3.0])
 
         # --- Top: PSTH comparison for this fiber only ---
-        plot_cs_psth_compare(df_fip[df_fip["event"] == ev], paradigm, cls, meta, data_col=data_col, fig=psth_sf)
-        psth_sf.suptitle(
-            "%s %s: %s" % (meta["subject_id"], meta["date"], ev), fontsize=13
+        plot_cs_psth_compare(
+            df_fip[df_fip["event"] == ev], paradigm, cls, meta, data_col=data_col, fig=psth_sf
         )
+        psth_sf.suptitle("%s %s: %s" % (meta["subject_id"], meta["date"], ev), fontsize=13)
 
         # --- Bottom left: reuse plot_anticipatory_lick_summary ---
         plot_anticipatory_lick_summary(
-            df_events, paradigm, cls, meta,
-            window_s=antilick_window, summary_stat=summary_stat,
-            swarm_width=swarm_width, fig=lick_sf,
+            df_events,
+            paradigm,
+            cls,
+            meta,
+            window_s=antilick_window,
+            summary_stat=summary_stat,
+            swarm_width=swarm_width,
+            fig=lick_sf,
         )
 
         # --- Right: CS response (all trials) + rewarded / unrewarded US response ---
@@ -1041,9 +1117,7 @@ def psth_CS_fip(
             plotted = [
                 (
                     x0,
-                    _plot_response_group(
-                        ax_resp, df, col, cs_list, x0, summary_stat, swarm_width
-                    ),
+                    _plot_response_group(ax_resp, df, col, cs_list, x0, summary_stat, swarm_width),
                     lab,
                 )
                 for x0, df, col, lab in groups
@@ -1066,9 +1140,15 @@ def psth_CS_fip(
                 _label_summary_stat_above_beeswarm(
                     ax_resp, summary_stat_values, x0, ymax, summary_stat_label, first=(gi == 0)
                 )
-                ax_resp.text((x0 + (n_cs - 1) / 2 - xlim[0]) / x_range, 1.03, lab,
-                             transform=ax_resp.transAxes,
-                             ha="center", va="bottom", fontsize=8)
+                ax_resp.text(
+                    (x0 + (n_cs - 1) / 2 - xlim[0]) / x_range,
+                    1.03,
+                    lab,
+                    transform=ax_resp.transAxes,
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                )
         ax_resp.spines["top"].set_visible(False)
         ax_resp.spines["right"].set_visible(False)
 
@@ -1118,23 +1198,25 @@ def plot_cs_psth_by_subject(
     for subject, subject_nwbs in nwb_by_subject.items():
         subject_channels, chans_per_nwb = _get_channels_from_nwb_list(subject_nwbs)
         subject_channels = [
-            ch for ch in subject_channels
+            ch
+            for ch in subject_channels
             if sum(ch in chans for chans in chans_per_nwb) >= min_sessions
         ]
         if not subject_channels:
             continue
 
         fig, axes = plt.subplots(
-            len(subject_channels), len(col_specs),
+            len(subject_channels),
+            len(col_specs),
             figsize=(5 * len(col_specs), 4 * len(subject_channels)),
-            sharey="row", squeeze=False,
+            sharey="row",
+            squeeze=False,
         )
 
         for r, channel in enumerate(subject_channels):
             # only pass sessions that actually contain this channel
             nwbs_with_chan = [
-                nwb for nwb, chans in zip(subject_nwbs, chans_per_nwb)
-                if channel in chans
+                nwb for nwb, chans in zip(subject_nwbs, chans_per_nwb) if channel in chans
             ]
             row_title = f"{channel} (N={len(nwbs_with_chan)} sessions)"
 
@@ -1146,8 +1228,9 @@ def plot_cs_psth_by_subject(
 
                 alignments = [
                     {
-                        cs: nwb.df_trials.query("CS_type == @cs" + extra)
-                             .CS_start_time_in_session.values
+                        cs: nwb.df_trials.query(
+                            "CS_type == @cs" + extra
+                        ).CS_start_time_in_session.values
                         for cs in cs_types
                     }
                     for nwb in nwbs_with_chan
@@ -1179,8 +1262,7 @@ def plot_cs_psth_by_subject(
 
         # single legend on the upper-right panel
         handles = [
-            Line2D([], [], color=cs_colors.get(cs, "k"), lw=2,
-                   label=cs_labels.get(cs, cs))
+            Line2D([], [], color=cs_colors.get(cs, "k"), lw=2, label=cs_labels.get(cs, cs))
             for cs in cs_types
         ]
         axes[0, -1].legend(handles=handles, loc="upper right", fontsize=8, frameon=False)
@@ -1233,12 +1315,27 @@ def plot_cs_metric(
         means.append(vals.mean() if n else np.nan)
         sems.append(vals.std(ddof=1) / np.sqrt(n) if n > 1 else 0.0)
         if show_sessions and n:
-            ax.scatter(x[i] + rng.uniform(-jitter, jitter, n), vals, s=22,
-                       color=cs_colors.get(cs, "gray"), alpha=0.7,
-                       edgecolors="none", zorder=2)
+            ax.scatter(
+                x[i] + rng.uniform(-jitter, jitter, n),
+                vals,
+                s=22,
+                color=cs_colors.get(cs, "gray"),
+                alpha=0.7,
+                edgecolors="none",
+                zorder=2,
+            )
     if len(x):
-        ax.errorbar(x, means, yerr=sems, fmt="o", color="black", markersize=9,
-                    capsize=4, elinewidth=1.8, zorder=3)
+        ax.errorbar(
+            x,
+            means,
+            yerr=sems,
+            fmt="o",
+            color="black",
+            markersize=9,
+            capsize=4,
+            elinewidth=1.8,
+            zorder=3,
+        )
 
     # ---- cosmetics ----
     if zero_line:
@@ -1251,7 +1348,9 @@ def plot_cs_metric(
     ax.set_title(f"{title} (N={n_ses})", fontsize=11, fontweight="bold")
     ax.spines[["top", "right"]].set_visible(False)
     return ax
-STAGE_LINESTYLES = ["-", "--", ":", "-."]   # stage 2 solid, stage 3 dashed, ...
+
+
+STAGE_LINESTYLES = ["-", "--", ":", "-."]  # stage 2 solid, stage 3 dashed, ...
 
 
 def plot_cs_metric_by_stage(
@@ -1284,8 +1383,7 @@ def plot_cs_metric_by_stage(
         ls = STAGE_LINESTYLES[s_i % len(STAGE_LINESTYLES)]
         x0 = s_i * (n_cs + gap)
         d = df_means[df_means["stage"].astype(str) == stage]
-        wide = d.pivot_table(index=session_col, columns="CS_type",
-                             values="value", observed=True)
+        wide = d.pivot_table(index=session_col, columns="CS_type", values="value", observed=True)
         wide.columns = wide.columns.astype(str)
         wide = wide.reindex(columns=cs_types)
         xs = x0 + np.arange(n_cs)
@@ -1293,27 +1391,47 @@ def plot_cs_metric_by_stage(
         # per-session thin lines
 
         for _, row in wide.iterrows():
-            ax.plot(xs, row.to_numpy(float), ls=ls, color="0.6",
-                    lw=0.8, alpha=0.6, zorder=1)
-            ax.scatter(xs, row.to_numpy(float), s=14, alpha=0.6,
-                        c=[cs_colors.get(cs, "gray") for cs in cs_types],
-                        edgecolors="none", zorder=2)
+            ax.plot(xs, row.to_numpy(float), ls=ls, color="0.6", lw=0.8, alpha=0.6, zorder=1)
+            ax.scatter(
+                xs,
+                row.to_numpy(float),
+                s=14,
+                alpha=0.6,
+                c=[cs_colors.get(cs, "gray") for cs in cs_types],
+                edgecolors="none",
+                zorder=2,
+            )
 
         # mean +/- SEM
         n = wide.notna().sum().to_numpy()
         m = wide.mean().to_numpy(float)
         sem = np.where(n > 1, wide.std(ddof=1).to_numpy(float) / np.sqrt(np.maximum(n, 1)), 0)
         ax.plot(xs, m, ls=ls, color="black", lw=2, zorder=3)
-        ax.errorbar(xs, m, yerr=sem, fmt="none", ecolor="black",
-                    capsize=3, elinewidth=1.5, zorder=3)
-        ax.scatter(xs, m, s=60, c=[cs_colors.get(cs, "gray") for cs in cs_types],
-                   edgecolors="black", linewidths=1, zorder=4)
+        ax.errorbar(
+            xs, m, yerr=sem, fmt="none", ecolor="black", capsize=3, elinewidth=1.5, zorder=3
+        )
+        ax.scatter(
+            xs,
+            m,
+            s=60,
+            c=[cs_colors.get(cs, "gray") for cs in cs_types],
+            edgecolors="black",
+            linewidths=1,
+            zorder=4,
+        )
 
         # stage label + divider
         n_ses = d[session_col].nunique()
-        ax.text(x0 + (n_cs - 1) / 2, 1.0, f"{stage} (N={n_ses})",
-                transform=ax.get_xaxis_transform(), ha="center", va="bottom",
-                fontsize=8, color="0.4")
+        ax.text(
+            x0 + (n_cs - 1) / 2,
+            1.0,
+            f"{stage} (N={n_ses})",
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="0.4",
+        )
         if s_i > 0:
             ax.axvline(x0 - (gap + 1) / 2, color="0.85", ls=":", lw=1, zorder=0)
 
@@ -1341,17 +1459,19 @@ def plot_cs_metric_rows(nwb_list, data_col="data_z", title=None, plot_loc=None, 
     """
     channels, chans_per_nwb = _get_channels_from_nwb_list(nwb_list)
     channels = [
-        ch for ch in channels
-        if sum(ch in chans for chans in chans_per_nwb) >= min_sessions
+        ch for ch in channels if sum(ch in chans for chans in chans_per_nwb) >= min_sessions
     ]
     if not channels:
         return None
     df_trials_all = concat_df_trials(nwb_list)
     y_label = {"data_z": "z-scored dF/F", "data": "dF/F"}.get(data_col, data_col)
 
-    cs_types = ['CS1', 'CS2', 'CS3']
-    stages = sorted(df_trials_all["stage"].dropna().astype(str).unique()) \
-        if "stage" in df_trials_all else []
+    cs_types = ["CS1", "CS2", "CS3"]
+    stages = (
+        sorted(df_trials_all["stage"].dropna().astype(str).unique())
+        if "stage" in df_trials_all
+        else []
+    )
 
     lick = session_means_by_cs(df_trials_all, "antilick", cs_types=cs_types)  # once
 
@@ -1362,33 +1482,55 @@ def plot_cs_metric_rows(nwb_list, data_col="data_z", title=None, plot_loc=None, 
         cs_col, rew_col = f"cs_{data_col}_{ch}", f"rew_{data_col}_{ch}"
         panels = [
             (lick, "Anticipatory lick rate", "licks / 2 s", False),
-            (session_means_by_cs(df_trials_all, cs_col, cs_types=cs_types),
-             "CS response", y_label, True),
-            (session_means_by_cs(df_trials_all, rew_col, "rewarded == True", cs_types),
-             "US response", y_label, True),
-            (session_means_by_cs(df_trials_all, rew_col, "rewarded == False", cs_types),
-             "No-US response", y_label, True),
+            (
+                session_means_by_cs(df_trials_all, cs_col, cs_types=cs_types),
+                "CS response",
+                y_label,
+                True,
+            ),
+            (
+                session_means_by_cs(df_trials_all, rew_col, "rewarded == True", cs_types),
+                "US response",
+                y_label,
+                True,
+            ),
+            (
+                session_means_by_cs(df_trials_all, rew_col, "rewarded == False", cs_types),
+                "No-US response",
+                y_label,
+                True,
+            ),
         ]
         row_pooled, row_stage = axes[2 * r], axes[2 * r + 1]
         for ax_p, ax_s, (d, t, yl, zl) in zip(row_pooled, row_stage, panels):
-            plot_cs_metric(d, title=t, ylabel=yl, cs_types=cs_types,
-                           zero_line=zl, ax=ax_p)
+            plot_cs_metric(d, title=t, ylabel=yl, cs_types=cs_types, zero_line=zl, ax=ax_p)
             if stages:
-                plot_cs_metric_by_stage(d, title=t, ylabel=yl, cs_types=cs_types,
-                                        stages=stages, zero_line=zl, ax=ax_s)
+                plot_cs_metric_by_stage(
+                    d, title=t, ylabel=yl, cs_types=cs_types, stages=stages, zero_line=zl, ax=ax_s
+                )
             else:
                 ax_s.set_axis_off()
 
         for ax, lbl in ((row_pooled[0], ch), (row_stage[0], f"{ch}\nby stage")):
-            ax.annotate(lbl, xy=(-0.45, 0.5), xycoords="axes fraction",
-                        rotation=90, ha="center", va="center",
-                        fontsize=11, fontweight="bold")
+            ax.annotate(
+                lbl,
+                xy=(-0.45, 0.5),
+                xycoords="axes fraction",
+                rotation=90,
+                ha="center",
+                va="center",
+                fontsize=11,
+                fontweight="bold",
+            )
 
     # shared stage linestyle legend
     if stages:
-        handles = [Line2D([], [], color="black", lw=2,
-                          ls=STAGE_LINESTYLES[i % len(STAGE_LINESTYLES)], label=s)
-                   for i, s in enumerate(stages)]
+        handles = [
+            Line2D(
+                [], [], color="black", lw=2, ls=STAGE_LINESTYLES[i % len(STAGE_LINESTYLES)], label=s
+            )
+            for i, s in enumerate(stages)
+        ]
         fig.legend(handles=handles, loc="upper right", frameon=False, fontsize=9)
 
     if title:

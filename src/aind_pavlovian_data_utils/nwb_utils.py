@@ -320,7 +320,7 @@ def create_df_trials(nwb_filename, adjust_time=True, verbose=True):  # NOQA C901
 
     # Build dataframe
     df = nwb.trials.to_dataframe().reset_index()
-    df = df.drop(columns = "id")
+    df = df.drop(columns="id")
     df["ses_idx"] = nwb_utils_dft.get_nwb_ses_idx(nwb)
 
     # Adjust for gaps in trial start/stop, and use the last stop time
@@ -368,30 +368,26 @@ def create_df_events(nwb_filename, adjust_time=True, verbose=True):
 
     nwb = load_nwb_from_filename(nwb_filename)
 
-    # Build list of all event types in acqusition, ignore FIP events (no need for processing folder)
-    # event_types = set(nwb.acquisition.keys())
-
-    # channels = ["G", "R", "Iso"]
-    # fibers = ["0", "1", "2", "3", "4"]
-    # FIP_prefixes = [f"{c}_{f}" for c in channels for f in fibers]
-
-    # # Filter out all fibers
-    # event_types = {
-    #     k for k in event_types if not any(k.startswith(prefix) for prefix in FIP_prefixes)
-    # }
-
-    # Version 1 pav nwb has pavlovian evnets in pavlovian event table
+    # Two NWB layouts:
+    #   v1 (older): nwb.processing["pavlovian_events"]["pavlovian_events_table"]
+    #               -> needs the temporary CS4 reward->airpuff relabel
+    #   v2 (newer): nwb.events["pavlovian_events_table"] -> labels already correct
     if "pavlovian_events" in nwb.processing:
-        df = (
-            nwb.processing["pavlovian_events"]["pavlovian_events_table"]
-            .to_dataframe()
-            .reset_index()
-        )
-        df = df.rename(columns={'timestamp': 'timestamps', 'events': 'event'})
-        df["timestamps_raw"] = df["timestamps"]
-        df["timestamps"] = df["timestamps"] / MS_TO_S
+        table = nwb.processing["pavlovian_events"]["pavlovian_events_table"]
+        is_v1 = True
+    elif getattr(nwb, "events", None) is not None and "pavlovian_events_table" in nwb.events:
+        table = nwb.events["pavlovian_events_table"]
+        is_v1 = False
+    else:
+        raise ValueError("No pavlovian_events_table found in nwb.processing or nwb.events")
+
+    df = table.to_dataframe().reset_index()
+    df = df.rename(columns={"timestamp": "timestamps", "events": "event"})
+    df["timestamps_raw"] = df["timestamps"]
+    df["timestamps"] = df["timestamps"] / MS_TO_S
+    if is_v1:
         df = _tmp_fix_cs4_reward_to_airpuff(df)
-        df["canonical"] = df["event"].map(canonical_event_name)
+    df["canonical"] = df["event"].map(canonical_event_name)
 
     # Determine time 0 as first go Cue
     if adjust_time:
@@ -465,8 +461,9 @@ def create_df_fip(
         If no series match ``preprocessing`` (typically a typo in the name).
     """
     nwb_utils_dft.SESSION_ALIGNMENT = SESSION_ALIGNMENT
-    df_fip = nwb_utils_dft.create_df_fip(nwb_filename, tidy=True,
-                                         adjust_time=adjust_time, verbose=verbose)
+    df_fip = nwb_utils_dft.create_df_fip(
+        nwb_filename, tidy=True, adjust_time=adjust_time, verbose=verbose
+    )
 
     if df_fip is None or len(df_fip) == 0:
         raise ValueError("No fiber-photometry data returned by create_df_fip.")

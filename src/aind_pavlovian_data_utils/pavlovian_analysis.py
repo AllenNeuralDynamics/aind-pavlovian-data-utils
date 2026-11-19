@@ -42,7 +42,6 @@ from rachel_analysis_utils import data_curation_helpers
 from rachel_analysis_utils.nwb_utils import dummy_nwb
 from aind_dynamic_foraging_data_utils import enrich_dfs
 
-
 # Data-shaping constants live in nwb_utils; re-used here for viz.
 canonical_event_name = nwb_utils.canonical_event_name  # re-export for convenience
 CHANNEL_MAP = nwb_utils.FIP_CHANNEL_MAP  # {'Iso':'Iso','G':'Green','R':'Red'}
@@ -68,8 +67,6 @@ OUTPUT_SR = 20.0
 ANTILICK_WINDOW = (0.0, 2.0)  # seconds after CS onset (CS->US delay)
 ANTILICK_SUMMARY_STAT = "mean"  # 'mean' -> mean +/- SD, 'median' -> median +/- IQR
 REW_WINDOW = (2.0, 4.0)  # seconds after CS onset for reward/US response
-
-
 
 
 def load_pavlovian_dfs(
@@ -296,7 +293,7 @@ def _apply_curation(df_fip, curation, meta, preprocessing):
     df = df_fip.copy()
     df["ses_idx"] = meta["ses_idx"]
     df["patch_cord"] = df["event"].astype(str).str.removesuffix(suffix)
-    df['preprocessing'] = preprocessing
+    df["preprocessing"] = preprocessing
 
     df_sess = pd.DataFrame({"ses_idx": [meta["ses_idx"]], "nwb_suffix": [meta["nwb_suffix"]]})
     curation = data_curation_helpers.drop_unchosen_recordings(curation, df_sess)
@@ -465,7 +462,7 @@ def process_nwb(
 def enrich_df_trials(
     nwb,
     channels=None,
-    data_col='data',
+    data_col="data",
     preprocessing=DEFAULT_PREPROCESSING,
     cs_window=ANTILICK_WINDOW,
     rew_window=REW_WINDOW,
@@ -573,15 +570,15 @@ def enrich_df_trials(
             df_trials.loc[idxs, "cs_%s_%s" % (data_col, ev)] = cs_resps
             df_trials.loc[idxs, "rew_%s_%s" % (data_col, ev)] = rew_resps
 
-
     return df_trials
+
 
 def enrich_pav_nwbs(nwb_list, data_col="data"):
     """
-    enrich_pav_nwbs does 2 things: 
+    enrich_pav_nwbs does 2 things:
         z-score df_fip[data_col] for each nwb separately, per session and channel.
-        enrich df_trials[data_col] for each nwb separately, per session and channel to get averaged responses
-        during US and CS times (subtracting baseline, 2 seconds before US)
+        enrich df_trials[data_col] for each nwb separately, per session and channel
+        to get averaged responses during US and CS times (subtracting baseline, 2 seconds before US)
     zscore_fip groups by ['ses_idx', 'event'] internally and adds a
     '<data_col>_z' column, leaving the original column untouched.
     Sessions with an empty df_fip are skipped.
@@ -593,7 +590,6 @@ def enrich_pav_nwbs(nwb_list, data_col="data"):
         nwb.df_fip = enrich_dfs.zscore_fip(nwb.df_fip, data_col=data_col)
         nwb.df_trials = enrich_df_trials(nwb, data_col="data")
         nwb.df_trials = enrich_df_trials(nwb, data_col="data_z")
-       
 
     return nwb_list
 
@@ -614,8 +610,9 @@ def concat_df_trials(nwbs):
 
         df_events = getattr(nwb, "df_events", None)
         df["stage"] = (
-            detect_paradigm(df_events)["stage"].split(' ')[0]
-            if df_events is not None and len(df_events) else None
+            detect_paradigm(df_events)["stage"].split(" ")[0]
+            if df_events is not None and len(df_events)
+            else None
         )
         frames.append(df)
 
@@ -629,8 +626,9 @@ def concat_df_trials(nwbs):
     return out
 
 
-def session_means_by_cs(df_trials_all, value_col, query=None,
-                        cs_types=['CS1', 'CS2', 'CS3'], session_col="ses_idx"):
+def session_means_by_cs(
+    df_trials_all, value_col, query=None, cs_types=["CS1", "CS2", "CS3"], session_col="ses_idx"
+):
     """
     Mean of `value_col` per session per CS type.
 
@@ -656,9 +654,8 @@ def session_means_by_cs(df_trials_all, value_col, query=None,
     if df.empty:
         return empty
 
-    out = (
-        df.groupby([session_col, *id_cols, "CS_type"], as_index=False, observed=True)
-          .agg(value=(value_col, "mean"), n_trials=(value_col, "size"))
+    out = df.groupby([session_col, *id_cols, "CS_type"], as_index=False, observed=True).agg(
+        value=(value_col, "mean"), n_trials=(value_col, "size")
     )
     out["CS_type"] = pd.Categorical(out["CS_type"], categories=cs_types, ordered=True)
     sort_cols = [c for c in ("session_date", session_col) if c in out.columns]
@@ -672,9 +669,7 @@ def _get_channels_from_nwb_list(nwb_list):
     and a list (parallel to ``nwb_list``) of the set of channels in each session.
     """
     chans_per_nwb = [
-        set(nwb.df_fip["event"].unique()) if len(nwb.df_fip) > 0 else set()
-        for nwb in nwb_list
+        set(nwb.df_fip["event"].unique()) if len(nwb.df_fip) > 0 else set() for nwb in nwb_list
     ]
     channels = sorted(set().union(*chans_per_nwb)) if chans_per_nwb else []
     return channels, chans_per_nwb
-
